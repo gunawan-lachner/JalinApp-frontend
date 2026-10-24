@@ -1,10 +1,12 @@
 "use client"
 
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import Editor, { type OnMount } from "@monaco-editor/react"
+import type * as Monaco from "monaco-editor"
 import { Loader2 } from "lucide-react"
 import { detectLanguage, languageLabel, toMonacoLanguage } from "@/components/renjs/language-utils"
 import { registerRenjsLanguage } from "@/components/renjs/renjs-language"
+import { registerXsltLanguage } from "@/components/renjs/xslt-language"
 
 interface CodeEditorProps {
   value: string
@@ -17,10 +19,36 @@ interface CodeEditorProps {
 export function CodeEditor({ value, onChange, fileName, readOnly = false, className }: CodeEditorProps) {
   const language = useMemo(() => detectLanguage(fileName || ""), [fileName])
   const monacoLanguage = toMonacoLanguage(language)
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+  const monacoRef = useRef<typeof Monaco | null>(null)
 
-  const handleMount: OnMount = useCallback((_editor, monaco) => {
-    registerRenjsLanguage(monaco)
+  const applyLanguage = useCallback((lang: string) => {
+    const editor = editorRef.current
+    const monaco = monacoRef.current
+    if (!editor || !monaco) return
+    const model = editor.getModel()
+    if (model && model.getLanguageId() !== lang) {
+      monaco.editor.setModelLanguage(model, lang)
+    }
   }, [])
+
+  const handleMount: OnMount = useCallback(
+    (editor, monaco) => {
+      editorRef.current = editor
+      monacoRef.current = monaco
+      registerRenjsLanguage(monaco)
+      registerXsltLanguage(monaco)
+      const model = editor.getModel()
+      if (model) {
+        monaco.editor.setModelLanguage(model, monacoLanguage)
+      }
+    },
+    [monacoLanguage],
+  )
+
+  useEffect(() => {
+    applyLanguage(monacoLanguage)
+  }, [monacoLanguage, applyLanguage])
 
   return (
     <div className={`h-full w-full min-h-0 ${className || ""}`}>
@@ -28,7 +56,7 @@ export function CodeEditor({ value, onChange, fileName, readOnly = false, classN
         height="100%"
         language={monacoLanguage}
         value={value}
-        path={fileName || "untitled.txt"}
+        path={fileName || "untitled.js"}
         onChange={(v) => onChange(v ?? "")}
         onMount={handleMount}
         theme="vs"
@@ -55,6 +83,17 @@ export function CodeEditor({ value, onChange, fileName, readOnly = false, classN
           glyphMargin: false,
           folding: true,
           cursorBlinking: "smooth",
+          // Bantuan edit JavaScript
+          autoClosingBrackets: "languageDefined",
+          autoClosingQuotes: "languageDefined",
+          suggestOnTriggerCharacters: true,
+          quickSuggestions: {
+            other: true,
+            comments: false,
+            strings: true,
+          },
+          formatOnPaste: true,
+          formatOnType: true,
         }}
       />
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   Search,
@@ -17,6 +17,7 @@ import {
   FolderOpen,
   Plus,
   Loader2,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -48,6 +51,7 @@ import {
   type CreatePacketRequest,
   type TrafficLog,
   type ConnectionLog,
+  type StressTestSnapshot,
 } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 
@@ -159,6 +163,8 @@ function parseISO8583Ascii(msg: string): {
   bitmapHex: string;
   secBitmap: string;
   dataElements: Record<number, string>;
+  /** Encoded span in the raw message, including LLVAR/LLLVAR length prefix. */
+  ranges: Record<number, { start: number; end: number }>;
 } | null {
   if (!msg || msg.length < 20) return null;
 
@@ -183,14 +189,17 @@ function parseISO8583Ascii(msg: string): {
 
   // Parse data elements based on bitmap
   const dataElements: Record<number, string> = {};
+  const ranges: Record<number, { start: number; end: number }> = {};
 
   for (let i = 1; i < bitmapBin.length; i++) {
     if (bitmapBin[i] !== "1") continue;
 
     const fieldNo = i + 1;
     const spec = ISO8583_FIELDS[fieldNo];
-    if (!spec) continue;
+    // Unknown layout would desync the rest of the message. Stop here.
+    if (!spec) break;
 
+    const start = idx;
     if (spec.type === "fixed") {
       if (idx + spec.len! > msg.length) break;
       const val = msg.substring(idx, idx + spec.len!);
@@ -199,23 +208,57 @@ function parseISO8583Ascii(msg: string): {
     } else if (spec.type === "llvar") {
       if (idx + 2 > msg.length) break;
       const len = Number.parseInt(msg.substring(idx, idx + 2), 10);
-      idx += 2;
-      if (idx + len > msg.length) break;
-      const val = msg.substring(idx, idx + len);
-      idx += len;
+      if (!Number.isFinite(len) || idx + 2 + len > msg.length) break;
+      const val = msg.substring(idx + 2, idx + 2 + len);
+      idx += 2 + len;
       dataElements[fieldNo] = val;
     } else if (spec.type === "lllvar") {
       if (idx + 3 > msg.length) break;
       const len = Number.parseInt(msg.substring(idx, idx + 3), 10);
-      idx += 3;
-      if (idx + len > msg.length) break;
-      const val = msg.substring(idx, idx + len);
-      idx += len;
+      if (!Number.isFinite(len) || idx + 3 + len > msg.length) break;
+      const val = msg.substring(idx + 3, idx + 3 + len);
+      idx += 3 + len;
       dataElements[fieldNo] = val;
     }
+    ranges[fieldNo] = { start, end: idx };
   }
 
-  return { mti, bitmapHex, secBitmap, dataElements };
+  return { mti, bitmapHex, secBitmap, dataElements, ranges };
+}
+
+function encodeIsoField(fieldNo: number, value: string): string | null {
+  const spec = ISO8583_FIELDS[fieldNo];
+  if (!spec) return null;
+  if (spec.type === "fixed") {
+    const len = spec.len ?? 0;
+    let val = value ?? "";
+    if (val.length > len) val = val.slice(0, len);
+    else if (val.length < len) {
+      val = /^\d*$/.test(val) ? val.padStart(len, "0") : val.padEnd(len, " ");
+    }
+    return val;
+  }
+  if (spec.type === "llvar") {
+    const max = spec.max_len ?? 99;
+    let val = value ?? "";
+    if (val.length > max) val = val.slice(0, max);
+    return String(val.length).padStart(2, "0") + val;
+  }
+  const max = spec.max_len ?? 999;
+  let val = value ?? "";
+  if (val.length > max) val = val.slice(0, max);
+  return String(val.length).padStart(3, "0") + val;
+}
+
+/** Replace one DE in the original ASCII message. Other fields and the bitmap stay intact. */
+function replaceIsoField(msg: string, fieldNo: number, value: string): string | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+  const range = parsed.ranges[fieldNo];
+  if (!range) return null;
+  const encoded = encodeIsoField(fieldNo, value);
+  if (encoded == null) return null;
+  return msg.slice(0, range.start) + encoded + msg.slice(range.end);
 }
 
 // Parse ISO8583 preview from ASCII or HEX
@@ -267,6 +310,16 @@ function parseIso8583Preview(
   return preview;
 }
 
+function formatStressTps(job: StressTestSnapshot) {
+  const tps =
+    typeof job.tps === "number"
+      ? job.tps
+      : job.elapsed_ms > 0
+        ? job.success_count / (job.elapsed_ms / 1000)
+        : 0;
+  return tps.toFixed(2);
+}
+
 export default function NetworkMessagePage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -276,6 +329,16 @@ export default function NetworkMessagePage() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showStressDialog, setShowStressDialog] = useState(false);
+  const [stressMode, setStressMode] = useState<"count" | "duration">("count");
+  const [stressCount, setStressCount] = useState(20);
+  const [stressDuration, setStressDuration] = useState(60);
+  const [stressConcurrency, setStressConcurrency] = useState(5);
+  const [stressDelay, setStressDelay] = useState(0);
+  const [incrementStan, setIncrementStan] = useState(true);
+  const [stressJob, setStressJob] = useState<StressTestSnapshot | null>(null);
+  const [stressRunning, setStressRunning] = useState(false);
+  const stressSummaryLogged = useRef<string | null>(null);
 
   // Data state
   const [packets, setPackets] = useState<NetworkPacket[]>([]);
@@ -367,6 +430,7 @@ export default function NetworkMessagePage() {
   const [ascii, setAscii] = useState<string>("");
   const [hex, setHex] = useState<string>("");
   const [comment, setComment] = useState<string>("");
+  const [deDrafts, setDeDrafts] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<"detail" | "logs">("detail");
 
   // Update form fields when selected packet changes
@@ -381,6 +445,7 @@ export default function NetworkMessagePage() {
       setAscii(selected.ascii || "");
       setHex(selected.hex || "");
       setComment(selected.comment || "");
+      setDeDrafts({});
       // Clear logs when selecting a different packet
       setTrafficLogs([]);
       setConnectionLogs([]);
@@ -395,6 +460,7 @@ export default function NetworkMessagePage() {
       setAscii("");
       setHex("");
       setComment("");
+      setDeDrafts({});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, isNewPacket]);
@@ -761,6 +827,110 @@ export default function NetworkMessagePage() {
     }
   };
 
+  const stressJobId = stressJob?.job_id;
+  const stressStatus = stressJob?.status;
+
+  const appendStressSummary = useCallback((snapshot: StressTestSnapshot) => {
+    if (snapshot.status === "running") return;
+    if (stressSummaryLogged.current === snapshot.job_id) return;
+    stressSummaryLogged.current = snapshot.job_id;
+    setStressRunning(false);
+    setConnectionLogs((prev) => [
+      {
+        id: Date.now(),
+        time: new Date().toISOString(),
+        connectionId: `STRESS-${snapshot.job_id.slice(0, 8)}`,
+        status: "INFO",
+        protocol: snapshot.protocol,
+        localAddress: "",
+        remoteAddress: snapshot.target,
+        details: "",
+        duration: `${Math.round(snapshot.elapsed_ms)} ms`,
+        packet_id: selectedId || 0,
+        message:
+          snapshot.mode === "duration"
+            ? `Stress test ${snapshot.status}: ${snapshot.success_count} sukses, gagal ${snapshot.fail_count}, ${snapshot.completed} request dalam ${Math.round(snapshot.elapsed_ms / 1000)}/${snapshot.duration_sec} dtk, avg ${snapshot.latency_ms.avg} ms, ${formatStressTps(snapshot)} TPS`
+            : `Stress test ${snapshot.status}: ${snapshot.success_count}/${snapshot.total} sukses, gagal ${snapshot.fail_count}, avg ${snapshot.latency_ms.avg} ms, ${formatStressTps(snapshot)} TPS`,
+      },
+      ...prev,
+    ]);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!stressJobId || stressStatus !== "running") return;
+
+    const timer = window.setInterval(async () => {
+      const response = await rnaApi.getNetworkStressTest(stressJobId);
+      const snapshot = response.success ? response.data?.data : undefined;
+      if (!snapshot) return;
+      setStressJob(snapshot);
+      appendStressSummary(snapshot);
+    }, 700);
+
+    return () => window.clearInterval(timer);
+  }, [stressJobId, stressStatus, appendStressSummary]);
+
+  const onStartStress = async () => {
+    if (!address || !port || !protocol || (!hex.trim() && !ascii.trim())) {
+      toast({
+        title: "Validasi",
+        description: "Isi address, port, protocol, dan payload ASCII atau HEX.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const count = Math.min(200, Math.max(1, Number(stressCount) || 1));
+    const durationSec = Math.min(600, Math.max(1, Number(stressDuration) || 60));
+    const concurrencyCap = stressMode === "duration" ? 10 : Math.min(10, count);
+    const concurrency = Math.min(concurrencyCap, Math.max(1, Number(stressConcurrency) || 1));
+    const delayMs = Math.min(2000, Math.max(0, Number(stressDelay) || 0));
+    setStressCount(count);
+    setStressDuration(durationSec);
+    setStressConcurrency(concurrency);
+    setStressDelay(delayMs);
+    setStressRunning(true);
+    setStressJob(null);
+    stressSummaryLogged.current = null;
+
+    const response = await rnaApi.startNetworkStressTest({
+      packet_id: selectedId || undefined,
+      packet: {
+        hex: hex || "",
+        ascii: ascii || "",
+        address,
+        port,
+        protocol,
+      },
+      mode: stressMode,
+      count,
+      duration_sec: durationSec,
+      concurrency,
+      delay_ms: delayMs,
+      increment_stan: incrementStan,
+    });
+
+    const snapshot = response.success ? response.data?.data : undefined;
+    if (!snapshot) {
+      setStressRunning(false);
+      toast({
+        title: "Stress test gagal dimulai",
+        description: response.error || "Tidak dapat memulai stress test",
+        variant: "destructive",
+      });
+      return;
+    }
+    setStressJob(snapshot);
+    appendStressSummary(snapshot);
+  };
+
+  const onStopStress = async () => {
+    if (!stressJob?.job_id) return;
+    const response = await rnaApi.stopNetworkStressTest(stressJob.job_id);
+    const snapshot = response.success ? response.data?.data : undefined;
+    if (snapshot) setStressJob(snapshot);
+  };
+
   const onDelete = () => {
     if (selectedId == null) return;
     setShowDeleteDialog(true);
@@ -808,6 +978,52 @@ export default function NetworkMessagePage() {
     () => parseIso8583Preview(ascii, hex),
     [ascii, hex]
   );
+
+  const applyIsoFieldEdit = (field: string, rawValue: string) => {
+    const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+    const parsed = parseISO8583Ascii(source);
+    if (!parsed) {
+      toast({
+        title: "Tidak dapat mengubah field",
+        description: "Payload ISO8583 tidak bisa diparse.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let next: string | null = null;
+    if (field === "MTI") {
+      const mti = rawValue.replace(/\D/g, "").padStart(4, "0").slice(-4);
+      next = mti + source.slice(4);
+    } else if (/^DE\d{3}$/.test(field)) {
+      const fieldNo = Number.parseInt(field.slice(2), 10);
+      if (!rawValue.trim()) {
+        toast({
+          title: "Nilai DE kosong",
+          description: "Isi nilai DE. Field yang sudah ada tidak dihapus dari bitmap.",
+          variant: "destructive",
+        });
+        return;
+      }
+      next = replaceIsoField(source, fieldNo, rawValue);
+      if (!next) {
+        toast({
+          title: "Tidak dapat mengubah DE",
+          description: `Posisi ${field} tidak ditemukan di payload.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    if (!next) return;
+    setAscii(next);
+    setHex(asciiToHex(next));
+    setDeDrafts((prev) => {
+      const copy = { ...prev };
+      delete copy[field];
+      return copy;
+    });
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1016,6 +1232,15 @@ export default function NetworkMessagePage() {
                       )}
 
                       <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => setShowStressDialog(true)}
+                          disabled={saving}
+                          className="rounded-2xl"
+                        >
+                          <Activity className="h-4 w-4 mr-2" />
+                          {stressRunning ? "Stress Test..." : "Stress Test"}
+                        </Button>
                         <Button
                           onClick={onSend}
                           disabled={saving}
@@ -1265,9 +1490,12 @@ export default function NetworkMessagePage() {
 
                         {/* Parsed ISO8583 Preview */}
                         <div className="pt-4">
-                          <h3 className="text-md font-semibold text-gray-800 mb-3">
+                          <h3 className="text-md font-semibold text-gray-800 mb-1">
                             Parsed ISO8583 Preview
                           </h3>
+                          <p className="text-xs text-gray-500 mb-3">
+                            Edit MTI atau DE, lalu keluar dari kolom. ASCII dan HEX ikut berubah sebelum dikirim.
+                          </p>
                           <div className="border border-gray-200 rounded-xl overflow-hidden">
                             <table className="w-full">
                               <thead className="bg-gray-50">
@@ -1292,16 +1520,53 @@ export default function NetworkMessagePage() {
                                     </td>
                                   </tr>
                                 ) : (
-                                  isoPreview.map((row, idx) => (
-                                    <tr key={idx} className="hover:bg-gray-50">
-                                      <td className="px-4 py-3 text-sm text-gray-700">
-                                        {row.field}
-                                      </td>
-                                      <td className="px-4 py-3 text-sm text-gray-900">
-                                        {row.value}
-                                      </td>
-                                    </tr>
-                                  ))
+                                  isoPreview.map((row, idx) => {
+                                    const editable =
+                                      row.field === "MTI" || /^DE\d{3}$/.test(row.field);
+                                    const draft = deDrafts[row.field];
+                                    return (
+                                      <tr key={idx} className="hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
+                                          {row.field}
+                                        </td>
+                                        <td className="px-4 py-2 text-sm text-gray-900">
+                                          {editable ? (
+                                            <Input
+                                              value={draft ?? row.value}
+                                              onChange={(e) =>
+                                                setDeDrafts((prev) => ({
+                                                  ...prev,
+                                                  [row.field]: e.target.value,
+                                                }))
+                                              }
+                                              onBlur={(e) => {
+                                                const next = e.target.value;
+                                                if (next === row.value) {
+                                                  setDeDrafts((prev) => {
+                                                    const copy = { ...prev };
+                                                    delete copy[row.field];
+                                                    return copy;
+                                                  });
+                                                  return;
+                                                }
+                                                applyIsoFieldEdit(row.field, next);
+                                              }}
+                                              onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                  (e.target as HTMLInputElement).blur();
+                                                }
+                                              }}
+                                              className="h-8 font-mono text-xs"
+                                            />
+                                          ) : (
+                                            <span className="font-mono text-xs break-all">
+                                              {row.value}
+                                            </span>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })
                                 )}
                               </tbody>
                             </table>
@@ -1518,6 +1783,217 @@ export default function NetworkMessagePage() {
           </div>
         </div>
       </div>
+
+      <Dialog open={showStressDialog} onOpenChange={setShowStressDialog}>
+        <DialogContent className="max-w-lg rounded-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-semibold text-gray-900">
+              Stress Test
+            </DialogTitle>
+            <DialogDescription className="text-gray-600">
+              Mengirim payload saat ini berulang ke {address || "-"}:{port || "-"} ({protocol}).
+              Mode jumlah berhenti setelah N request. Mode waktu mengirim terus sampai durasi habis.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-100 p-1">
+              <Button
+                type="button"
+                variant={stressMode === "count" ? "default" : "ghost"}
+                disabled={stressRunning}
+                onClick={() => setStressMode("count")}
+                className={`rounded-xl ${stressMode === "count" ? "bg-blue-600 hover:bg-blue-700" : ""}`}
+              >
+                Jumlah
+              </Button>
+              <Button
+                type="button"
+                variant={stressMode === "duration" ? "default" : "ghost"}
+                disabled={stressRunning}
+                onClick={() => setStressMode("duration")}
+                className={`rounded-xl ${stressMode === "duration" ? "bg-blue-600 hover:bg-blue-700" : ""}`}
+              >
+                Waktu
+              </Button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-sm font-medium text-gray-700 mb-2 block">
+                  {stressMode === "duration" ? "Detik" : "Jumlah"}
+                </Label>
+                {stressMode === "duration" ? (
+                  <Input
+                    type="number"
+                    min={1}
+                    max={600}
+                    value={stressDuration}
+                    disabled={stressRunning}
+                    onChange={(e) => setStressDuration(Number(e.target.value))}
+                    className="rounded-2xl"
+                  />
+                ) : (
+                  <Input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={stressCount}
+                    disabled={stressRunning}
+                    onChange={(e) => setStressCount(Number(e.target.value))}
+                    className="rounded-2xl"
+                  />
+                )}
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-700 mb-2 block">
+                  Konkuren
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={stressConcurrency}
+                  disabled={stressRunning}
+                  onChange={(e) => setStressConcurrency(Number(e.target.value))}
+                  className="rounded-2xl"
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-700 mb-2 block">
+                  Jeda (ms)
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={2000}
+                  value={stressDelay}
+                  disabled={stressRunning}
+                  onChange={(e) => setStressDelay(Number(e.target.value))}
+                  className="rounded-2xl"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="increment-stan"
+                checked={incrementStan}
+                disabled={stressRunning}
+                onCheckedChange={(value) => setIncrementStan(value === true)}
+              />
+              <Label htmlFor="increment-stan" className="text-sm text-gray-700 leading-5">
+                Naikkan STAN (DE11) dan RRN (DE37) pada tiap request ISO8583
+              </Label>
+            </div>
+
+            {stressJob && (
+              <div className="space-y-3 rounded-2xl bg-gray-50 p-4">
+                <div className="flex items-center justify-between text-sm text-gray-600">
+                  <span>
+                    {stressJob.mode === "duration"
+                      ? `${stressJob.completed} request · ${Math.min(stressJob.duration_sec, Math.round(stressJob.elapsed_ms / 1000))}/${stressJob.duration_sec} dtk`
+                      : `${stressJob.completed}/${stressJob.total}`}
+                    {" · "}
+                    {stressJob.status}
+                  </span>
+                  <span className="font-semibold text-gray-800">
+                    {formatStressTps(stressJob)} TPS
+                  </span>
+                </div>
+                <Progress
+                  value={
+                    stressJob.mode === "duration"
+                      ? Math.min(
+                          100,
+                          stressJob.duration_sec
+                            ? Math.round((stressJob.elapsed_ms / (stressJob.duration_sec * 1000)) * 100)
+                            : 0
+                        )
+                      : stressJob.total
+                        ? Math.round((stressJob.completed / stressJob.total) * 100)
+                        : 0
+                  }
+                />
+                <div className="grid grid-cols-5 gap-2 text-center">
+                  <div>
+                    <div className="text-xs text-gray-500">TPS</div>
+                    <div className="text-sm font-semibold text-blue-700">
+                      {formatStressTps(stressJob)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Sukses</div>
+                    <div className="text-sm font-semibold text-green-700">
+                      {stressJob.success_count}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Gagal</div>
+                    <div className="text-sm font-semibold text-red-700">
+                      {stressJob.fail_count}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Avg</div>
+                    <div className="text-sm font-semibold text-gray-800">
+                      {stressJob.latency_ms.avg} ms
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">p95</div>
+                    <div className="text-sm font-semibold text-gray-800">
+                      {stressJob.latency_ms.p95} ms
+                    </div>
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  min {stressJob.latency_ms.min} ms · max {stressJob.latency_ms.max} ms ·{" "}
+                  {Math.round(stressJob.elapsed_ms)} ms
+                </div>
+                {stressJob.errors.length > 0 && (
+                  <div className="space-y-1">
+                    {stressJob.errors.map((item) => (
+                      <div
+                        key={item.message}
+                        className="text-xs text-red-700 break-all"
+                      >
+                        {item.count}× {item.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="flex gap-3 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowStressDialog(false)}
+              className="flex-1 rounded-full"
+            >
+              Tutup
+            </Button>
+            {stressRunning ? (
+              <Button
+                onClick={onStopStress}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-full"
+              >
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Stop
+              </Button>
+            ) : (
+              <Button
+                onClick={onStartStress}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-full"
+              >
+                <Activity className="h-4 w-4 mr-2" />
+                Mulai
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>

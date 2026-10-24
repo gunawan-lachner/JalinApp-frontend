@@ -10,6 +10,7 @@ import {
   Database,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   LogOut,
   Settings as LucideSettings,
   User,
@@ -19,12 +20,35 @@ import {
   Activity,
   Shield,
   FileCode2,
+  Code2,
+  Cpu,
+  Layers,
 } from "lucide-react";
 import type { IconType } from "react-icons";
 import { getFeatherIcon } from "../settings/icon-catalog";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
-import { Badge } from "@/components/ui/badge";
+
+type NavItem = {
+  title: string;
+  icon: React.ElementType;
+  id: string;
+  href: string;
+  pageId?: number;
+  parentId?: number | null;
+  adminOnly: boolean;
+};
+
+type NavGroup = {
+  type: "group";
+  id: string;
+  title: string;
+  icon: React.ElementType;
+  href?: string;
+  children: NavItem[];
+};
+
+type NavEntry = ({ type: "item" } & NavItem) | NavGroup;
 
 // Icon mapping for different page types
 const getIconForPage = (name: string, path: string): React.ElementType => {
@@ -52,6 +76,13 @@ const getIconForPage = (name: string, path: string): React.ElementType => {
     return Shield;
   if (lowerName.includes("renjs") || lowerPath.includes("renjs"))
     return FileCode2;
+  if (
+    lowerName.includes("container plugin") ||
+    lowerPath.includes("container-plugin")
+  )
+    return Cpu;
+  if (lowerName.includes("gmm") || lowerPath.includes("gmm")) return Layers;
+  if (lowerName.includes("ide") || lowerPath.includes("ide")) return Code2;
 
   // Default icon
   return FileText;
@@ -74,6 +105,19 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
     }
     return true;
   });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    () => {
+      if (typeof window !== "undefined") {
+        try {
+          const stored = localStorage.getItem("sidebar:expandedGroups");
+          if (stored) return JSON.parse(stored) as Record<string, boolean>;
+        } catch {
+          // ignore parse errors
+        }
+      }
+      return {};
+    }
+  );
 
   const setExpanded = (value: boolean) => {
     setIsExpanded(value);
@@ -82,6 +126,18 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
     } catch {
       // ignore write errors
     }
+  };
+
+  const setGroupExpanded = (groupId: string, value: boolean) => {
+    setExpandedGroups((prev) => {
+      const next = { ...prev, [groupId]: value };
+      try {
+        localStorage.setItem("sidebar:expandedGroups", JSON.stringify(next));
+      } catch {
+        // ignore write errors
+      }
+      return next;
+    });
   };
 
   // Restore scroll position on mount
@@ -124,6 +180,24 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
     };
   }, []);
 
+  // Auto-expand parent group when a child route is active
+  useEffect(() => {
+    const currentPath = activeSection || pathname;
+    const activeChild = accessiblePages.find((page) => page.path === currentPath);
+    if (!activeChild?.parent_id) return;
+    const groupId = `group-${activeChild.parent_id}`;
+    setExpandedGroups((prev) => {
+      if (prev[groupId]) return prev;
+      const next = { ...prev, [groupId]: true };
+      try {
+        localStorage.setItem("sidebar:expandedGroups", JSON.stringify(next));
+      } catch {
+        // ignore write errors
+      }
+      return next;
+    });
+  }, [activeSection, pathname, accessiblePages]);
+
   const handleItemClick = (path: string) => {
     onNavigate(path);
   };
@@ -137,37 +211,94 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
   };
 
   // Build navigation items from accessible pages
-  const navigationItems = accessiblePages.map((page) => {
-    // Prefer backend-provided Feather icon name (e.g., "FiHome"). Fallback to heuristic.
-    let IconComp: React.ElementType;
-    const pageIconName = (page as any)?.icon as unknown;
-    if (typeof pageIconName === "string" && pageIconName.trim().length > 0) {
-      const FeatherIcon: IconType = getFeatherIcon(pageIconName);
-      IconComp = FeatherIcon as unknown as React.ElementType;
-    } else {
-      IconComp = getIconForPage(page.name, page.path);
-    }
+  const flatItems: NavItem[] = accessiblePages
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.page_order ?? 0) - (b.page_order ?? 0) ||
+        a.name.localeCompare(b.name)
+    )
+    .map((page) => {
+      // Prefer backend-provided Feather icon name (e.g., "FiHome"). Fallback to heuristic.
+      let IconComp: React.ElementType;
+      const pageIconName = page.icon;
+      if (typeof pageIconName === "string" && pageIconName.trim().length > 0) {
+        const FeatherIcon: IconType = getFeatherIcon(pageIconName);
+        IconComp = FeatherIcon as unknown as React.ElementType;
+      } else {
+        IconComp = getIconForPage(page.name, page.path);
+      }
 
-    return {
-      title: page.name,
-      icon: IconComp,
-      id: `page-${page.id_page}`,
-      href: page.path,
-      adminOnly: false, // Access control is now handled by the API
-    };
-  });
+      return {
+        title: page.name,
+        icon: IconComp,
+        id: `page-${page.id_page}`,
+        href: page.path,
+        pageId: page.id_page,
+        parentId: page.parent_id ?? null,
+        adminOnly: false, // Access control is now handled by the API
+      };
+    });
 
   // Always add dashboard if not present (fallback)
-  const hasDashboard = navigationItems.some(
+  const hasDashboard = flatItems.some(
     (item) => item.href === "/" || item.href === "/dashboard"
   );
   if (!hasDashboard) {
-    navigationItems.unshift({
+    flatItems.unshift({
       title: "Dashboard",
       icon: Home,
       id: "dashboard",
       href: "/",
       adminOnly: false,
+    });
+  }
+
+  // Build nested menu entries from parent_id
+  const childrenByParent = new Map<number, NavItem[]>();
+  for (const item of flatItems) {
+    if (item.parentId != null) {
+      const list = childrenByParent.get(item.parentId) || [];
+      list.push(item);
+      childrenByParent.set(item.parentId, list);
+    }
+  }
+
+  const navigationEntries: NavEntry[] = [];
+  const insertedParentIds = new Set<number>();
+
+  for (const item of flatItems) {
+    // Skip child pages; they render under their parent group
+    if (item.parentId != null) continue;
+
+    const children =
+      item.pageId != null ? childrenByParent.get(item.pageId) || [] : [];
+
+    if (children.length > 0 && item.pageId != null) {
+      navigationEntries.push({
+        type: "group",
+        id: `group-${item.pageId}`,
+        title: item.title,
+        icon: item.icon,
+        href: item.href,
+        children,
+      });
+      insertedParentIds.add(item.pageId);
+      continue;
+    }
+
+    navigationEntries.push({ type: "item", ...item });
+  }
+
+  // Orphan children whose parent is missing from accessible pages
+  for (const [parentId, children] of childrenByParent.entries()) {
+    if (insertedParentIds.has(parentId) || children.length === 0) continue;
+    navigationEntries.push({
+      type: "group",
+      id: `group-${parentId}`,
+      title: "Menu",
+      icon: Code2,
+      children,
     });
   }
 
@@ -182,22 +313,24 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
         <div className="flex items-center justify-between">
           {/* User Profile */}
           {user && isExpanded && (
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-3 min-w-0 flex-1 pr-2">
               <div className="bg-blue-500 rounded-2xl p-3 flex-shrink-0">
                 <User className="h-5 w-5 text-white" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <Badge
-                    variant="secondary"
-                    className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border-blue-200 text-left"
-                  >
-                    {/* Safely access role_name and apply transformations */}
-                    {user.role_name === "admin"
-                      ? "Admin"
-                      : user.role_name?.replace("_", " ").toUpperCase() || ""}
-                  </Badge>
-                </div>
+                <p
+                  className="text-sm font-semibold text-gray-900 truncate"
+                  title={`${(user.full_name || user.username || "").trim()} (${(
+                    user.role_name || ""
+                  )
+                    .replace(/_/g, " ")
+                    .toUpperCase()})`}
+                >
+                  {(user.full_name || user.username || "").trim()}
+                  {user.role_name
+                    ? ` (${user.role_name.replace(/_/g, " ").toUpperCase()})`
+                    : ""}
+                </p>
                 <p className="text-xs text-gray-500 font-medium">
                   Online • Active
                 </p>
@@ -236,8 +369,109 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
       {/* Navigation Section */}
       <div ref={scrollContainerRef} className="p-4 flex-1 overflow-y-auto">
         <nav className="space-y-2">
-          {navigationItems.map((item) => {
-            const isActive = activeSection === item.href;
+          {navigationEntries.map((entry) => {
+            if (entry.type === "group") {
+              const isGroupOpen = !!expandedGroups[entry.id];
+              const isGroupActive = entry.children.some(
+                (child) =>
+                  activeSection === child.href || pathname === child.href
+              );
+
+              return (
+                <div key={entry.id}>
+                  <button
+                    onClick={() => {
+                      if (!isExpanded) {
+                        setExpanded(true);
+                        setGroupExpanded(entry.id, true);
+                        return;
+                      }
+                      setGroupExpanded(entry.id, !isGroupOpen);
+                    }}
+                    className={`w-full group relative flex items-center ${
+                      isExpanded
+                        ? "justify-between px-4 py-3"
+                        : "justify-center p-3"
+                    } rounded-2xl text-left transition-all duration-200 ${
+                      isGroupActive
+                        ? "bg-blue-50 text-blue-700 border border-blue-200"
+                        : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
+                    }`}
+                    title={!isExpanded ? entry.title : undefined}
+                  >
+                    <div
+                      className={`flex items-center ${
+                        isExpanded ? "space-x-3" : "justify-center"
+                      }`}
+                    >
+                      <div
+                        className={`p-2 rounded-xl transition-all duration-200 ${
+                          isGroupActive
+                            ? "bg-blue-100 text-blue-600"
+                            : "bg-gray-100 text-gray-500 group-hover:bg-gray-200 group-hover:text-gray-600"
+                        }`}
+                      >
+                        <entry.icon className="h-4 w-4 flex-shrink-0" />
+                      </div>
+                      {isExpanded && (
+                        <div className="flex-1">
+                          <span className="font-medium text-sm">
+                            {entry.title}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    {isExpanded &&
+                      (isGroupOpen ? (
+                        <ChevronDown className="h-4 w-4 text-gray-400" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-gray-400" />
+                      ))}
+                  </button>
+
+                  {isExpanded && isGroupOpen && (
+                    <div className="mt-1 ml-4 space-y-1 border-l border-gray-200 pl-2">
+                      {entry.children.map((child) => {
+                        const isActive =
+                          activeSection === child.href ||
+                          pathname === child.href;
+
+                        return (
+                          <button
+                            key={child.id}
+                            onClick={() => handleItemClick(child.href)}
+                            className={`w-full group relative flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all duration-200 ${
+                              isActive
+                                ? "bg-blue-50 text-blue-700 border border-blue-200"
+                                : "text-gray-600 hover:bg-gray-50 hover:text-gray-800"
+                            }`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <div
+                                className={`p-1.5 rounded-lg transition-all duration-200 ${
+                                  isActive
+                                    ? "bg-blue-100 text-blue-600"
+                                    : "bg-gray-100 text-gray-500 group-hover:bg-gray-200 group-hover:text-gray-600"
+                                }`}
+                              >
+                                <child.icon className="h-3.5 w-3.5 flex-shrink-0" />
+                              </div>
+                              <span className="font-medium text-sm">
+                                {child.title}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            const item = entry;
+            const isActive =
+              activeSection === item.href || pathname === item.href;
 
             return (
               <div key={item.id}>

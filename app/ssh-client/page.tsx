@@ -83,6 +83,30 @@ interface SshTab {
   executing: boolean;
 }
 
+function textToLines(text: string | undefined): string[] {
+  if (!text) return [];
+  const parts = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  if (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
+  return parts;
+}
+
+function commandResultLines(data: {
+  success?: boolean;
+  output?: string;
+  error?: string;
+  exit_code?: number;
+}): string[] {
+  const lines = [...textToLines(data.output), ...textToLines(data.error)];
+  if (lines.length === 0) {
+    lines.push(data.success === false ? "Command execution failed" : "(no output)");
+  }
+  if (typeof data.exit_code === "number" && data.exit_code !== 0) {
+    lines.push(`Exit code: ${data.exit_code}`);
+  }
+  lines.push("");
+  return lines;
+}
+
 export default function SSHClientPage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -627,12 +651,14 @@ export default function SSHClientPage() {
         tab.connection.name,
         tab.customCommand
       );
-      if (!res.success || !res.data?.success) {
+      if (!res.success || !res.data) {
         throw new Error(
           res.error || res.data?.error || "Command execution failed"
         );
       }
-      const outputLines: string[] = [res.data.output || "(no output)", ""];
+
+      const outputLines = commandResultLines(res.data);
+      const commandFailed = res.data.success === false;
       setTabs((prev) =>
         prev.map((t) =>
           t.id === currentTabId
@@ -640,11 +666,22 @@ export default function SSHClientPage() {
             : t
         )
       );
-      toast({
-        title: "Command Executed",
-        description: "Command executed successfully.",
-        variant: "default",
-      });
+
+      if (commandFailed) {
+        const errorMsg = (res.data.error || "Command execution failed").trim();
+        setError(errorMsg);
+        toast({
+          title: "Command Execution Failed",
+          description: errorMsg,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Command Executed",
+          description: "Command executed successfully.",
+          variant: "default",
+        });
+      }
     } catch (err: any) {
       const errorMsg = err?.message || "Command execution failed.";
       setTabs((prev) =>

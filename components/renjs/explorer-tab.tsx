@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Folder,
   FileText,
@@ -17,8 +17,10 @@ import {
   Settings2,
   BookmarkPlus,
   Database,
+  Download,
   Menu,
   Trash2,
+  X,
 } from "lucide-react"
 import dynamic from "next/dynamic"
 import { Button } from "@/components/ui/button"
@@ -53,6 +55,7 @@ import {
 } from "@/components/renjs/workspace-dialog"
 import { CodeEditorLanguageBadge } from "@/components/renjs/code-editor"
 import { SaveScriptDialog } from "@/components/renjs/save-script-dialog"
+import { SaveXsltMappingDialog } from "@/components/gmm/save-xslt-mapping-dialog"
 
 const CodeEditor = dynamic(
   () => import("@/components/renjs/code-editor").then((m) => m.CodeEditor),
@@ -110,7 +113,14 @@ function fileNameFromGroup(group: string, fallback = "main"): string {
   return name
 }
 
-export function ExplorerTab() {
+export type ExplorerDbTarget = "renjs" | "gmm"
+
+interface ExplorerTabProps {
+  /** Target tabel Save to DB. Default: renjs (`scripts`). GMM memakai `gmm_xslt_mapping`. */
+  dbTarget?: ExplorerDbTarget
+}
+
+export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
   const { toast } = useToast()
   const [currentPath, setCurrentPath] = useState("")
   const [pathInput, setPathInput] = useState("")
@@ -129,8 +139,15 @@ export function ExplorerTab() {
   const [explorerHidden, setExplorerHidden] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
   const [saveDbOpen, setSaveDbOpen] = useState(false)
+  const [dbDialogIntent, setDbDialogIntent] = useState<"save" | "load">("save")
   const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+  const [externalChanged, setExternalChanged] = useState(false)
+  const [externalModifiedAt, setExternalModifiedAt] = useState<string | null>(null)
+  const [reloading, setReloading] = useState(false)
+  const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false)
+  const diskMtimeRef = useRef<number | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null
     const stored = localStorage.getItem(ACTIVE_WORKSPACE_KEY)
@@ -144,6 +161,37 @@ export function ExplorerTab() {
   const isDirty = content !== savedContent
   const activeFolder = (currentPath || pathInput).trim()
   const canSaveToFolder = Boolean(activeFolder && selectedName?.trim() && (content || selectedName) && !saving)
+  const canCloseEditor = Boolean(selectedPath || selectedName || content)
+
+  const rememberDiskMtime = (mtime: number | null | undefined) => {
+    const next = typeof mtime === "number" && Number.isFinite(mtime) ? mtime : null
+    diskMtimeRef.current = next
+    if (next != null) {
+      setExternalChanged(false)
+      setExternalModifiedAt(null)
+    }
+  }
+
+  const closeEditor = () => {
+    setSelectedPath(null)
+    setSelectedName(null)
+    setContent("")
+    setSavedContent("")
+    setFileError(null)
+    setCloseConfirmOpen(false)
+    rememberDiskMtime(null)
+    setExternalChanged(false)
+    setExternalModifiedAt(null)
+  }
+
+  const handleCloseEditor = () => {
+    if (!canCloseEditor) return
+    if (isDirty) {
+      setCloseConfirmOpen(true)
+      return
+    }
+    closeEditor()
+  }
 
   const persistActiveWorkspace = (id: number | null) => {
     setActiveWorkspaceId(id)
@@ -235,7 +283,7 @@ export function ExplorerTab() {
     if (!entry.editable) {
       toast({
         title: "Tidak dapat dibuka",
-        description: "Hanya file teks (.txt, .renjs, .md, dll) yang bisa diedit.",
+        description: "Hanya file teks (.js, .renjs, .txt, .md, dll) yang bisa diedit.",
         variant: "destructive",
       })
       return
@@ -250,6 +298,7 @@ export function ExplorerTab() {
         const text = res.data.data.content ?? ""
         setContent(text)
         setSavedContent(text)
+        rememberDiskMtime(res.data.data.mtime)
       } else {
         setFileError(res.error || res.data?.error || "Gagal membaca file")
         setContent("")
@@ -263,6 +312,79 @@ export function ExplorerTab() {
       setFileLoading(false)
     }
   }
+
+  const reloadFromDisk = async () => {
+    if (!selectedPath) return
+    setReloading(true)
+    setFileError(null)
+    setReloadConfirmOpen(false)
+    try {
+      const res = await rnaApi.renjsReadFile(selectedPath)
+      if (res.success && res.data?.data) {
+        const text = res.data.data.content ?? ""
+        setContent(text)
+        setSavedContent(text)
+        if (res.data.data.name) setSelectedName(res.data.data.name)
+        rememberDiskMtime(res.data.data.mtime)
+        toast({
+          title: "File dimuat ulang",
+          description: res.data.data.modified_at
+            ? `Perubahan dari disk (${res.data.data.modified_at})`
+            : selectedPath,
+        })
+        if (currentPath) await listDirectory(currentPath)
+      } else {
+        const msg = res.error || res.data?.error || "Gagal memuat ulang file"
+        setFileError(msg)
+        toast({ title: "Gagal reload", description: msg, variant: "destructive" })
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setFileError(msg)
+      toast({ title: "Gagal reload", description: msg, variant: "destructive" })
+    } finally {
+      setReloading(false)
+    }
+  }
+
+  const handleReload = () => {
+    if (!selectedPath) return
+    if (isDirty) {
+      setReloadConfirmOpen(true)
+      return
+    }
+    void reloadFromDisk()
+  }
+
+  useEffect(() => {
+    if (!selectedPath) {
+      setExternalChanged(false)
+      setExternalModifiedAt(null)
+      return
+    }
+    let cancelled = false
+    const check = async () => {
+      const baseline = diskMtimeRef.current
+      if (baseline == null) return
+      try {
+        const res = await rnaApi.renjsStatFile(selectedPath)
+        if (cancelled || !res.success || !res.data?.data) return
+        const mtime = res.data.data.mtime
+        if (typeof mtime !== "number") return
+        if (Math.abs(mtime - baseline) > 0.001) {
+          setExternalChanged(true)
+          setExternalModifiedAt(res.data.data.modified_at || null)
+        }
+      } catch {
+        // ignore transient stat errors
+      }
+    }
+    const timer = window.setInterval(check, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [selectedPath])
 
   const handleEntryClick = (entry: FileEntry) => {
     if (entry.is_dir) {
@@ -343,6 +465,7 @@ export function ExplorerTab() {
         setSelectedPath(resolved)
         setSelectedName(fileName)
         setSavedContent(content)
+        rememberDiskMtime(res.data?.data?.mtime)
         toast({
           title: "Tersimpan",
           description: `Disimpan ke ${resolved}`,
@@ -533,25 +656,49 @@ export function ExplorerTab() {
         onOpenWorkspace={openWorkspace}
       />
 
-      <SaveScriptDialog
-        open={saveDbOpen}
-        onOpenChange={setSaveDbOpen}
-        content={content}
-        suggestedName="main"
-        suggestedGroup={(selectedName || "").replace(/\.[^.]+$/, "") || ""}
-        onLoadedContent={(loaded, meta) => {
-          const fileName = fileNameFromGroup(meta.group_name || "", meta.name || "main")
-          setContent(loaded)
-          setSavedContent(loaded)
-          setSelectedName(fileName)
-          setSelectedPath(null)
-          setFileError(null)
-          toast({
-            title: "Konten dimuat dari DB",
-            description: `Nama file: ${fileName} (dari group${meta.group_name ? `: ${meta.group_name}` : ""})`,
-          })
-        }}
-      />
+      {dbTarget === "gmm" ? (
+        <SaveXsltMappingDialog
+          open={saveDbOpen}
+          onOpenChange={setSaveDbOpen}
+          content={content}
+          intent={dbDialogIntent}
+          suggestedName={(selectedName || "").replace(/\.[^.]+$/, "") || ""}
+          onLoadedContent={(loaded, meta) => {
+            const base = (meta.name || "mapping").trim() || "mapping"
+            const fileName = /\.[^.]+$/.test(base) ? base : `${base}.xslt`
+            setContent(loaded)
+            setSavedContent(loaded)
+            setSelectedName(fileName)
+            setSelectedPath(null)
+            setFileError(null)
+            toast({
+              title: "Konten dimuat dari DB",
+              description: `Nama file: ${fileName} (dari gmm_xslt_mapping #${meta.id})`,
+            })
+          }}
+        />
+      ) : (
+        <SaveScriptDialog
+          open={saveDbOpen}
+          onOpenChange={setSaveDbOpen}
+          content={content}
+          intent={dbDialogIntent}
+          suggestedName="main"
+          suggestedGroup={(selectedName || "").replace(/\.[^.]+$/, "") || ""}
+          onLoadedContent={(loaded, meta) => {
+            const fileName = fileNameFromGroup(meta.group_name || "", meta.name || "main")
+            setContent(loaded)
+            setSavedContent(loaded)
+            setSelectedName(fileName)
+            setSelectedPath(null)
+            setFileError(null)
+            toast({
+              title: "Konten dimuat dari DB",
+              description: `Nama file: ${fileName} (dari group${meta.group_name ? `: ${meta.group_name}` : ""})`,
+            })
+          }}
+        />
+      )}
 
       {listError && (
         <Alert variant="destructive">
@@ -720,12 +867,56 @@ export function ExplorerTab() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  {externalChanged && selectedPath && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleReload}
+                      disabled={reloading || fileLoading}
+                      className="border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                      title={
+                        externalModifiedAt
+                          ? `File berubah di disk (${externalModifiedAt}). Muat ulang dari disk.`
+                          : "File berubah di aplikasi lain. Muat ulang dari disk."
+                      }
+                    >
+                      {reloading ? (
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                      )}
+                      Reload
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setSaveDbOpen(true)}
+                    onClick={() => {
+                      setDbDialogIntent("load")
+                      setSaveDbOpen(true)
+                    }}
+                    title={
+                      dbTarget === "gmm"
+                        ? "Load XSLT from gmm_xslt_mapping"
+                        : "Load script from database"
+                    }
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Load from DB
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setDbDialogIntent("save")
+                      setSaveDbOpen(true)
+                    }}
                     disabled={!selectedPath && !selectedName && !content}
-                    title="Save script to database"
+                    title={
+                      dbTarget === "gmm"
+                        ? "Save XSLT to gmm_xslt_mapping"
+                        : "Save script to database"
+                    }
                   >
                     <Database className="h-4 w-4 mr-2" />
                     Save to DB
@@ -748,6 +939,16 @@ export function ExplorerTab() {
                       <Save className="h-4 w-4 mr-2" />
                     )}
                     Simpan
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCloseEditor}
+                    disabled={!canCloseEditor}
+                    title="Tutup file di editor"
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Close
                   </Button>
                 </div>
               </div>
@@ -811,6 +1012,77 @@ export function ExplorerTab() {
             >
               {deleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2" />}
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={reloadConfirmOpen} onOpenChange={setReloadConfirmOpen}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50">
+              <RefreshCw className="h-6 w-6 text-amber-600" />
+            </div>
+            <AlertDialogTitle className="text-center">Muat ulang dari disk?</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-2">
+              <span className="block">
+                File diubah dari aplikasi lain
+                {externalModifiedAt ? ` (${externalModifiedAt})` : ""}. Perubahan di editor yang belum
+                disimpan akan ditimpa.
+              </span>
+              {selectedName && (
+                <span className="block font-mono text-sm text-gray-800 break-all">{selectedName}</span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-center gap-2">
+            <AlertDialogCancel disabled={reloading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                void reloadFromDisk()
+              }}
+              disabled={reloading}
+              className="bg-amber-600 hover:bg-amber-700 focus:ring-amber-600"
+            >
+              {reloading ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Reload
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={closeConfirmOpen} onOpenChange={setCloseConfirmOpen}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50">
+              <X className="h-6 w-6 text-amber-600" />
+            </div>
+            <AlertDialogTitle className="text-center">Tutup file?</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-2">
+              <span className="block">
+                Ada perubahan yang belum disimpan. Perubahan akan hilang jika file ditutup.
+              </span>
+              {selectedName && (
+                <span className="block font-mono text-sm text-gray-800 break-all">{selectedName}</span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-center gap-2">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                closeEditor()
+              }}
+              className="bg-amber-600 hover:bg-amber-700 focus:ring-amber-600"
+            >
+              <X className="h-4 w-4 mr-2" />
+              Close anyway
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

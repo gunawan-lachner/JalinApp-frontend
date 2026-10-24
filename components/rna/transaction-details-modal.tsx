@@ -29,10 +29,12 @@ import {
   Copy,
   Search,
   RefreshCw,
-  ChevronUp,
-  ChevronDown,
-  ChevronLeft,
   Check,
+  ListFilter,
+  Pencil,
+  Mail,
+  ChevronDown,
+  Server,
 } from "lucide-react";
 import type { Transaction } from "@/lib/api";
 import { Card, CardContent } from "@/components/ui/card";
@@ -45,6 +47,7 @@ interface TransactionDetailsModalProps {
     attributes: any[];
     endpoints: any[];
     graylog: any[];
+    graylogError?: string | null;
   };
   isLoading: boolean;
 }
@@ -830,12 +833,19 @@ export function TransactionDetailsModal({
   };
 
   // Custom GrayLog Messages Tab Component with timestamp grouping and expandable messages
-  const GrayLogMessagesTab = ({ data, loading, onCopy, onExport }: any) => {
+  const GrayLogMessagesTab = ({
+    data,
+    loading,
+    error,
+    onCopy,
+    onExport,
+  }: any) => {
     const [searchTerm, setSearchTerm] = useState("");
     const [expandedMessages, setExpandedMessages] = useState<Set<string>>(
       new Set()
     );
     const [copiedAll, setCopiedAll] = useState(false);
+    const [showSearch, setShowSearch] = useState(false);
 
     if (loading) {
       return (
@@ -844,6 +854,19 @@ export function TransactionDetailsModal({
             <RefreshCw className="h-5 w-5 animate-spin text-blue-600" />
             <span className="text-gray-600">Loading graylog messages...</span>
           </div>
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <div className="flex flex-col items-start justify-center gap-3 p-6 m-4 rounded-lg border border-red-200 bg-red-50 text-red-800">
+          <p className="font-semibold">Gagal mengambil GrayLog messages</p>
+          <p className="text-sm whitespace-pre-wrap break-words">{error}</p>
+          <p className="text-xs text-red-600">
+            Tip: user GrayLog harus punya permission Search API
+            (/api/search/universal/absolute), bukan hanya bisa login ke UI.
+          </p>
         </div>
       );
     }
@@ -1046,62 +1069,71 @@ export function TransactionDetailsModal({
       return <span>{String(obj)}</span>;
     };
 
-    const groupedMessages = messages.reduce((groups: any, item: any) => {
-      let message, timestamp;
+    const formatGraylogTimestamp = (dateString: string) => {
+      try {
+        const d = new Date(dateString);
+        if (Number.isNaN(d.getTime())) return dateString || "Unknown";
+        const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(
+          d.getUTCDate()
+        )} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(
+          d.getUTCSeconds()
+        )}.${pad(d.getUTCMilliseconds(), 3)} +00:00`;
+      } catch {
+        return dateString || "Unknown";
+      }
+    };
 
+    const normalizeMessage = (item: any, index: number) => {
       if (isSavedTransactionData) {
-        // For saved transaction data, the item IS the message
-        message = item;
-        timestamp = item.timestamp;
-      } else {
-        // For table view data, extract message from nested structure
-        message = item.message || item;
-        timestamp =
+        return {
+          message: item,
+          messageId: `saved-${item.uuid || "msg"}-${index}`,
+          timestamp: item.timestamp,
+          source: item.source || "Unknown Source",
+          plugin: item.Plugin || item.plugin || "-",
+          uuid: item.UUID || item.uuid || "-",
+          messageContent: String(item.message ?? "No message content"),
+        };
+      }
+
+      const message = item.message || item;
+      return {
+        message,
+        messageId: message._id || message.id || `msg-${index}`,
+        timestamp:
           message.timestamp ||
           message.EventReceivedTime ||
           message.dt ||
-          message.date_n_time;
-      }
-
-      if (!timestamp) {
-        // If no timestamp, group under "Unknown Time"
-        const unknownKey = "Unknown Time";
-        if (!groups[unknownKey]) {
-          groups[unknownKey] = [];
-        }
-        groups[unknownKey].push(item);
-        return groups;
-      }
-
-      const date = new Date(timestamp);
-      const hourKey = `${date.getFullYear()}-${String(
-        date.getMonth() + 1
-      ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(
-        date.getHours()
-      ).padStart(2, "0")}:00`;
-
-      if (!groups[hourKey]) {
-        groups[hourKey] = [];
-      }
-      groups[hourKey].push(item);
-      return groups;
-    }, {});
-
-    const getSeverityColor = (severity: string) => {
-      switch (severity?.toUpperCase()) {
-        case "ERROR":
-          return "bg-red-100 text-red-700 border-red-200";
-        case "WARN":
-        case "WARNING":
-          return "bg-yellow-100 text-yellow-700 border-yellow-200";
-        case "INFO":
-          return "bg-blue-100 text-blue-700 border-blue-200";
-        case "DEBUG":
-          return "bg-gray-100 text-gray-700 border-gray-200";
-        default:
-          return "bg-purple-100 text-purple-700 border-purple-200";
-      }
+          message.date_n_time,
+        source:
+          message.source || message.gl2_remote_ip || "Unknown Source",
+        plugin: message.Plugin || message.plugin || "-",
+        uuid: message.UUID || message.uuid || "-",
+        messageContent: String(
+          message.full_message || message.message || "No message content"
+        ),
+      };
     };
+
+    const sortedMessages = [...messages]
+      .map((item: any, index: number) => normalizeMessage(item, index))
+      .filter((entry) => {
+        if (!searchTerm.trim()) return true;
+        const q = searchTerm.toLowerCase();
+        return (
+          entry.messageContent.toLowerCase().includes(q) ||
+          String(entry.source || "").toLowerCase().includes(q) ||
+          String(entry.plugin || "").toLowerCase().includes(q) ||
+          String(entry.uuid || "").toLowerCase().includes(q) ||
+          String(entry.timestamp || "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return ta - tb;
+      });
 
     const toggleMessageExpansion = (messageId: string) => {
       const newExpanded = new Set(expandedMessages);
@@ -1114,277 +1146,393 @@ export function TransactionDetailsModal({
     };
 
     return (
-      <div className="flex flex-col min-h-0 ">
-        {/* Tab Header with Controls */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
-          <div className="flex items-center space-x-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="Search graylog messages..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 h-9 w-64 rounded-lg border-gray-300"
-              />
-            </div>
-            <Badge variant="secondary" className="bg-green-100 text-green-700">
-              {messages.length} messages
-            </Badge>
-            <Badge variant="secondary" className="bg-blue-100 text-blue-700">
-              {Object.keys(groupedMessages).length} time groups
-            </Badge>
-          </div>
-          <div className="flex items-center space-x-2">
+      <div className="flex flex-col min-h-0 bg-white border border-gray-200 rounded-sm overflow-hidden">
+        {/* Graylog-style widget header */}
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-white">
+          <h3 className="text-sm font-semibold text-gray-800">All Messages</h3>
+          <div className="flex items-center gap-1">
             <Button
-              variant="outline"
-              size="sm"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-gray-500 hover:text-gray-800"
+              onClick={() => setShowSearch((v) => !v)}
+              title="Search"
+            >
+              <Search className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-gray-500 hover:text-gray-800"
               onClick={() => {
                 onCopy(JSON.stringify(messages, null, 2));
                 setCopiedAll(true);
                 setTimeout(() => setCopiedAll(false), 1500);
               }}
-              className="rounded-lg text-xs bg-transparent"
+              title={copiedAll ? "Copied" : "Copy all"}
             >
               {copiedAll ? (
-                <Check className="h-3 w-3 mr-1 text-green-600" />
+                <Check className="h-3.5 w-3.5 text-green-600" />
               ) : (
-                <Copy className="h-3 w-3 mr-1" />
+                <Copy className="h-3.5 w-3.5" />
               )}
-              {copiedAll ? "Copied" : "Copy All"}
             </Button>
             <Select onValueChange={(format) => onExport(messages, format)}>
-              <SelectTrigger className="w-24 h-8 rounded-lg text-xs">
-                <SelectValue placeholder="Export" />
+              <SelectTrigger className="h-7 w-7 p-0 border-0 shadow-none justify-center [&>svg:last-child]:hidden">
+                <Pencil className="h-3.5 w-3.5 text-gray-500" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="json">JSON</SelectItem>
-                <SelectItem value="txt">TXT</SelectItem>
+                <SelectItem value="json">Export JSON</SelectItem>
+                <SelectItem value="txt">Export TXT</SelectItem>
               </SelectContent>
             </Select>
+            <span className="text-[11px] text-gray-500 ml-1">
+              {sortedMessages.length}
+            </span>
           </div>
         </div>
 
-        {/* Messages Content */}
-        <div className="flex-1 min-w-0 p-4 space-y-4 max-h-[calc(95vh-250px)] overflow-y-auto">
-          {Object.entries(groupedMessages).map(
-            ([timeGroup, groupMessages]: [string, any]) => (
-              <Card
-                key={timeGroup}
-                className="border border-gray-200 rounded-xl shadow-sm"
-              >
-                <div className="bg-gradient-to-r from-blue-50 to-purple-50 px-4 py-3 border-b border-gray-200 rounded-t-xl">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-gray-800 flex items-center space-x-2">
-                      <Activity className="h-4 w-4 text-blue-600" />
-                      <span>{timeGroup}</span>
-                    </h3>
-                    <Badge
-                      variant="secondary"
-                      className="bg-white/80 text-gray-700"
+        {showSearch && (
+          <div className="px-3 py-2 border-b border-gray-200 bg-gray-50">
+            <Input
+              placeholder="Search messages..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="h-8 text-xs rounded-sm border-gray-300"
+              autoFocus
+            />
+          </div>
+        )}
+
+        {/* Column headers */}
+        <div className="grid grid-cols-[minmax(210px,1.1fr)_minmax(110px,0.7fr)_minmax(160px,1.3fr)_minmax(240px,1.2fr)] gap-3 px-3 py-1.5 bg-[#f3f3f3] border-b border-gray-200 text-[11px] font-semibold text-gray-600">
+          {["timestamp", "source", "Plugin", "UUID"].map((label) => (
+            <div key={label} className="flex items-center gap-1 min-w-0">
+              <span className="truncate">{label}</span>
+              <ListFilter className="h-3 w-3 text-gray-400 shrink-0" />
+            </div>
+          ))}
+        </div>
+
+        {/* Message list */}
+        <div className="flex-1 min-w-0 max-h-[calc(95vh-280px)] overflow-y-auto">
+          {sortedMessages.length === 0 ? (
+            <div className="px-3 py-8 text-center text-sm text-gray-500">
+              No messages found
+            </div>
+          ) : (
+            sortedMessages.map((entry) => {
+              const {
+                message,
+                messageId,
+                timestamp,
+                source,
+                plugin,
+                uuid,
+                messageContent,
+              } = entry;
+              const isExpanded = expandedMessages.has(messageId);
+              const messageStyle = getMessageStyle(message);
+
+              return (
+                <div
+                  key={messageId}
+                  className="border-b border-gray-200 px-3 py-2 hover:bg-[#fafafa] cursor-pointer"
+                  onClick={() => toggleMessageExpansion(messageId)}
+                >
+                  <div className="grid grid-cols-[minmax(210px,1.1fr)_minmax(110px,0.7fr)_minmax(160px,1.3fr)_minmax(240px,1.2fr)] gap-3">
+                    <span className="text-[13px] font-bold text-gray-900 leading-5 truncate">
+                      {formatGraylogTimestamp(timestamp || "Unknown")}
+                    </span>
+                    <span className="text-[13px] font-bold text-gray-900 leading-5 truncate">
+                      {source}
+                    </span>
+                    <span
+                      className="text-[13px] font-bold text-gray-900 leading-5 truncate"
+                      title={plugin}
                     >
-                      {groupMessages.length} messages
-                    </Badge>
+                      {plugin}
+                    </span>
+                    <span
+                      className="text-[13px] font-bold text-gray-900 leading-5 truncate"
+                      title={uuid}
+                    >
+                      {uuid}
+                    </span>
                   </div>
-                </div>
 
-                <CardContent className="p-0">
-                  <div className="space-y-0">
-                    {groupMessages.map((item: any, index: number) => {
-                      let message,
-                        messageId,
-                        timestamp,
-                        plugin,
-                        source,
-                        severity,
-                        messageContent,
-                        uuid,
-                        messageId_field;
+                  <pre
+                    className="mt-0.5 pl-0 text-[12.5px] font-mono leading-5 whitespace-pre-wrap break-words text-[#0a7a7a]"
+                    style={messageStyle.style || undefined}
+                  >
+                    {applyRuleStyleToText(messageContent, rules)}
+                  </pre>
 
-                      if (isSavedTransactionData) {
-                        // For saved transaction data
-                        message = item;
-                        messageId = `saved-${item.uuid}-${index}`;
-                        timestamp = item.timestamp;
-                        plugin = `Level ${item.level}`;
-                        source = item.source;
-                        severity = `Level ${item.level}`;
-                        messageContent = item.message;
-                        uuid = item.uuid;
-                        messageId_field = null;
-                      } else {
-                        // For table view data
-                        message = item.message || item;
-                        messageId =
-                          message._id || message.id || `${timeGroup}-${index}`;
-                        timestamp =
-                          message.timestamp || message.EventReceivedTime;
-                        plugin =
-                          message.Plugin || message.plugin || "Unknown Plugin";
-                        source =
-                          message.source ||
-                          message.gl2_remote_ip ||
-                          "Unknown Source";
-                        severity =
-                          message.Severity || message.severity || "INFO";
-                        messageContent =
-                          message.full_message ||
-                          message.message ||
-                          "No message content";
-                        uuid = message.UUID;
-                        messageId_field = message._id;
-                      }
+                  {isExpanded && (
+                    <div
+                      className="mt-2 mb-1 border border-gray-200 bg-[#f7f7f7] px-4 py-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {(() => {
+                        const fields =
+                          message && typeof message === "object"
+                            ? message
+                            : {};
+                        const graylogId =
+                          fields._id ||
+                          fields.gl2_message_id ||
+                          messageId;
+                        const receivedBy =
+                          fields.gl2_source_input ||
+                          fields.gl2_source_node ||
+                          fields.gl2_remote_ip ||
+                          "-";
+                        const storedInIndex =
+                          fields.gl2_source_collector ||
+                          fields._index ||
+                          fields.index ||
+                          "-";
+                        const streams = Array.isArray(fields.streams)
+                          ? fields.streams
+                          : fields.gl2_route
+                            ? [fields.gl2_route]
+                            : [];
+                        const leftMeta = [
+                          {
+                            label: "Timestamp",
+                            value: formatGraylogTimestamp(
+                              fields.timestamp || timestamp || "-"
+                            ).replace(" +00:00", ""),
+                          },
+                          {
+                            label: "Received by",
+                            value: receivedBy,
+                            icon: true,
+                          },
+                          {
+                            label: "Stored in index",
+                            value: storedInIndex,
+                          },
+                          {
+                            label: "Routed into streams",
+                            value: streams,
+                            streams: true,
+                          },
+                        ];
+                        const rightFieldOrder = [
+                          "EventReceivedTime",
+                          "Plugin",
+                          "Severity",
+                          "SourceModuleName",
+                          "SourceModuleType",
+                          "UUID",
+                          "facility",
+                          "full_message",
+                          "message",
+                          "level",
+                          "source",
+                        ];
+                        const usedKeys = new Set([
+                          "timestamp",
+                          "_id",
+                          "gl2_message_id",
+                          "gl2_source_input",
+                          "gl2_source_node",
+                          "gl2_remote_ip",
+                          "gl2_source_collector",
+                          "_index",
+                          "index",
+                          "streams",
+                          "gl2_route",
+                          "message",
+                          "full_message",
+                          ...rightFieldOrder.map((k) => k.toLowerCase()),
+                        ]);
+                        const rightFields = rightFieldOrder
+                          .map((key) => {
+                            const foundKey = Object.keys(fields).find(
+                              (k) => k.toLowerCase() === key.toLowerCase()
+                            );
+                            if (!foundKey) return null;
+                            const val = fields[foundKey];
+                            if (val === undefined || val === null || val === "")
+                              return null;
+                            return { label: foundKey, value: val };
+                          })
+                          .filter(Boolean) as Array<{
+                          label: string;
+                          value: any;
+                        }>;
 
-                      const isExpanded = expandedMessages.has(messageId);
+                        // Append remaining fields not already shown
+                        Object.keys(fields).forEach((key) => {
+                          if (usedKeys.has(key.toLowerCase())) return;
+                          if (
+                            rightFields.some(
+                              (f) => f.label.toLowerCase() === key.toLowerCase()
+                            )
+                          )
+                            return;
+                          const val = fields[key];
+                          if (
+                            val === undefined ||
+                            val === null ||
+                            typeof val === "object"
+                          )
+                            return;
+                          rightFields.push({ label: key, value: val });
+                        });
 
-                      return (
-                        <div
-                          key={messageId}
-                          className={`p-4 ${
-                            index !== groupMessages.length - 1
-                              ? "border-b border-gray-100"
-                              : ""
-                          } hover:bg-gray-50 transition-colors`}
-                        >
-                          <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
-                            <div className="flex items-center space-x-3">
-                              <ChevronLeft className="h-4 w-4 text-gray-400" />
-                              <span className="font-mono text-sm text-gray-700">
-                                {formatDate(timestamp || "Unknown")}
-                              </span>
-                            </div>
-                            <div className="flex items-center space-x-3">
-                              <span className="font-mono text-sm text-gray-600">
-                                {plugin}
-                              </span>
-                              <span className="font-mono text-sm text-gray-500">
-                                {source}
-                              </span>
-                            </div>
-                          </div>
+                        const fullMessage =
+                          fields.full_message || fields.message || messageContent;
 
-                          <div className="mb-3">
-                            <p
-                              className="text-sm text-gray-800 leading-relaxed"
-                              style={getMessageStyle(message).style || {}}
-                            >
-                              {(() => {
-                                const maxLength = 200;
-                                return messageContent.length > maxLength
-                                  ? `${messageContent.substring(
-                                      0,
-                                      maxLength
-                                    )}...`
-                                  : messageContent;
-                              })()}
-                            </p>
-                            {getMessageStyle(message).rule && (
-                              <div className="mt-2">
-                                <Badge
+                        return (
+                          <>
+                            <div className="flex flex-wrap items-center justify-between gap-2 mb-4 pb-3 border-b border-gray-200">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <Mail className="h-4 w-4 text-gray-500 shrink-0" />
+                                <span className="text-sm font-semibold text-gray-800 font-mono truncate">
+                                  {graylogId}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <Button
                                   variant="outline"
-                                  className="text-xs bg-blue-50 text-blue-700 border-blue-200"
+                                  size="sm"
+                                  className="h-7 px-2.5 text-xs rounded-sm bg-white"
+                                  onClick={() => {
+                                    onCopy(String(graylogId));
+                                    setCopiedCell(`${messageId}-permalink`);
+                                    setTimeout(() => setCopiedCell(null), 1500);
+                                  }}
                                 >
-                                  Rule Applied:{" "}
-                                  {getMessageStyle(message).rule.description ||
-                                    `Rule ${getMessageStyle(message).rule.id}`}
-                                </Badge>
+                                  Permalink
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2.5 text-xs rounded-sm bg-white"
+                                  disabled
+                                >
+                                  Show surrounding messages
+                                  <ChevronDown className="h-3 w-3 ml-1" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2.5 text-xs rounded-sm bg-white"
+                                  disabled
+                                >
+                                  Test against stream
+                                  <ChevronDown className="h-3 w-3 ml-1" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2.5 text-xs rounded-sm bg-white"
+                                  onClick={() => {
+                                    onCopy(String(graylogId));
+                                    setCopiedCell(`${messageId}-id`);
+                                    setTimeout(() => setCopiedCell(null), 1500);
+                                  }}
+                                >
+                                  {copiedCell === `${messageId}-id` ||
+                                  copiedCell === `${messageId}-permalink` ? (
+                                    <>
+                                      <Check className="h-3 w-3 mr-1 text-green-600" />
+                                      Copied
+                                    </>
+                                  ) : (
+                                    "Copy ID"
+                                  )}
+                                </Button>
                               </div>
-                            )}
-                          </div>
-
-                          <div className="border-t border-gray-100 pt-3">
-                            <div className="flex items-center justify-between mb-2">
-                              <h4 className="font-semibold text-gray-700 text-sm">
-                                Message Fields:
-                              </h4>
-                              <button
-                                onClick={() =>
-                                  toggleMessageExpansion(messageId)
-                                }
-                                className="text-blue-600 hover:text-blue-800 text-xs font-medium flex items-center space-x-1 transition-colors"
-                              >
-                                {isExpanded ? (
-                                  <>
-                                    <ChevronUp className="h-3 w-3" />
-                                    <span>Collapse</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <ChevronDown className="h-3 w-3" />
-                                    <span>Expand</span>
-                                  </>
-                                )}
-                              </button>
                             </div>
 
-                            {isExpanded ? (
-                              <div className="bg-gray-50 p-4 rounded-lg max-w-full">
-                                <div className="font-mono text-xs text-gray-800 whitespace-pre-wrap min-w-max">
-                                  {renderStructuredData(message)}
-                                </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-1">
+                              <div className="space-y-3">
+                                {leftMeta.map((item) => (
+                                  <div key={item.label}>
+                                    <div className="text-[12px] font-semibold text-gray-700 mb-0.5">
+                                      {item.label}
+                                    </div>
+                                    {item.streams ? (
+                                      <ul className="list-disc list-inside text-[13px]">
+                                        {(item.value as any[]).length > 0 ? (
+                                          (item.value as any[]).map(
+                                            (stream: any, i: number) => (
+                                              <li key={i}>
+                                                <span className="text-[#5b4db8] hover:underline cursor-default">
+                                                  {typeof stream === "string"
+                                                    ? stream
+                                                    : stream?.title ||
+                                                      stream?.id ||
+                                                      JSON.stringify(stream)}
+                                                </span>
+                                              </li>
+                                            )
+                                          )
+                                        ) : (
+                                          <li className="text-gray-500 list-none">
+                                            -
+                                          </li>
+                                        )}
+                                      </ul>
+                                    ) : (
+                                      <div className="text-[13px] text-gray-800 flex items-center gap-1.5 break-all">
+                                        {item.icon && (
+                                          <Server className="h-3.5 w-3.5 text-[#5b4db8] shrink-0" />
+                                        )}
+                                        <span>{String(item.value)}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
                               </div>
-                            ) : (
-                              <div className="space-y-1 text-xs">
-                                <div className="flex items-center space-x-4">
-                                  <Badge
-                                    className={`${getSeverityColor(
-                                      severity
-                                    )} text-xs font-medium`}
-                                  >
-                                    {severity}
-                                  </Badge>
-                                  {uuid && (
-                                    <span className="text-gray-500">
-                                      UUID:{" "}
-                                      <code className="bg-gray-100 px-1 rounded">
-                                        {uuid}
-                                      </code>
-                                    </span>
-                                  )}
-                                  {messageId_field && (
-                                    <span className="text-gray-500">
-                                      ID:{" "}
-                                      <code className="bg-gray-100 px-1 rounded">
-                                        {messageId_field}
-                                      </code>
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </div>
 
-                          {/* Copy Button */}
-                          <div className="flex justify-end mt-3 pt-2 border-t border-gray-100">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                onCopy(JSON.stringify(message, null, 2));
-                                setCopiedCell(messageId);
-                                setTimeout(() => setCopiedCell(null), 1500);
-                              }}
-                              className="h-7 px-3 text-xs rounded-md hover:bg-gray-100"
-                            >
-                              {copiedCell === messageId ? (
-                                <>
-                                  <Check className="h-3 w-3 mr-1 text-green-600" />
-                                  Copied
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="h-3 w-3 mr-1" />
-                                  Copy Message
-                                </>
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            )
+                              <div className="space-y-3">
+                                {rightFields
+                                  .filter(
+                                    (f) =>
+                                      f.label.toLowerCase() !==
+                                        "full_message" &&
+                                      f.label.toLowerCase() !== "message"
+                                  )
+                                  .map((item) => (
+                                    <div key={item.label}>
+                                      <div className="text-[12px] font-semibold text-gray-700 mb-0.5">
+                                        {item.label}
+                                      </div>
+                                      <div className="text-[13px] text-gray-800 break-all whitespace-pre-wrap">
+                                        {String(item.value)}
+                                      </div>
+                                    </div>
+                                  ))}
+                              </div>
+                            </div>
+
+                            <div className="mt-4 pt-3 border-t border-gray-200">
+                              <div className="text-[12px] font-semibold text-gray-700 mb-1">
+                                full_message
+                              </div>
+                              <pre
+                                className="text-[12.5px] font-mono leading-5 whitespace-pre-wrap break-words text-[#0a7a7a]"
+                                style={messageStyle.style || undefined}
+                              >
+                                {applyRuleStyleToText(
+                                  String(fullMessage),
+                                  rules
+                                )}
+                              </pre>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </div>
@@ -1498,6 +1646,7 @@ export function TransactionDetailsModal({
               <GrayLogMessagesTab
                 data={transactionDetails.graylog}
                 loading={isLoading}
+                error={transactionDetails.graylogError}
                 onCopy={(data: string) => navigator.clipboard.writeText(data)}
                 onExport={(data: any, format: any) =>
                   exportTabData(data, format, "graylog-messages")

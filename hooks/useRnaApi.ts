@@ -162,11 +162,11 @@ export function useRnaApi() {
 
     getGrayLogData: useCallback(
       (profileId, transactionId, onSuccess, onError) =>
+        // Do not cache failures — GrayLog auth/permission errors must be retryable
         handleApiCall(
           () => rnaApi.getGrayLogData(profileId, transactionId),
           onSuccess,
           onError,
-          `graylog-data-${profileId}-${transactionId}`,
         ),
       [handleApiCall],
     ),
@@ -445,6 +445,8 @@ export function useRnaApi() {
           gateway_id?: number
           participant_iss_id?: number
           participant_acq_id?: number
+          rule?: string
+          description?: string
         },
         onSuccess,
         onError,

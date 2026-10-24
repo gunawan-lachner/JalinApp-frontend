@@ -11,6 +11,7 @@ import {
   Search,
   Table,
   BarChart,
+  CreditCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,9 +23,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 
 import { useRnaApi } from "@/hooks/useRnaApi";
@@ -81,7 +88,9 @@ export default function TransactionPage() {
     return `${todayStr} 23:59:59`;
   });
 
-  const [dynamicFilters, setDynamicFilters] = useState<DynamicFilter[]>([]);
+  const [dynamicFilters, setDynamicFilters] = useState<DynamicFilter[]>([
+    { field: "Trx ID", operator: "=", value: "" },
+  ]);
   const [filterFields, setFilterFields] = useState<
     Array<{ label: string; value: string }>
   >([]);
@@ -114,7 +123,7 @@ export default function TransactionPage() {
   });
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState<any>(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const [showFilters, setShowFilters] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [sortConfig, setSortConfig] = useState<{
     key: string;
@@ -140,10 +149,12 @@ export default function TransactionPage() {
     attributes: any[];
     endpoints: any[];
     graylog: any[];
+    graylogError?: string | null;
   }>({
     attributes: [],
     endpoints: [],
     graylog: [],
+    graylogError: null,
   });
 
   const [resultCodeFilter, setResultCodeFilter] = useState("all");
@@ -489,6 +500,7 @@ export default function TransactionPage() {
       filterFields.length > 0 ? filterFields[0].value : "Trx ID";
     const defaultOperator =
       filterOperators.length > 0 ? filterOperators[0].value : "=";
+    setShowFilters(true);
     setDynamicFilters([
       ...dynamicFilters,
       { field: defaultField, operator: defaultOperator, value: "" },
@@ -730,7 +742,7 @@ export default function TransactionPage() {
     const todayStr = today.toISOString().split("T")[0];
     setDateStart(`${todayStr} 00:00:01`);
     setDateEnd(`${todayStr} 23:59:59`);
-    setDynamicFilters([]);
+    setDynamicFilters([{ field: "Trx ID", operator: "=", value: "" }]);
     setColumnFilters({});
     setGlobalSearchTerm("");
     setSearchTerm("");
@@ -738,7 +750,7 @@ export default function TransactionPage() {
     setTransactionStatusFilter("all");
     if (selectedConnection) {
       setTimeout(
-        () => handleSearch(1, preferredPageSize, viewMode === "insights"),
+        () => handleSearch(1, preferredPageSize, viewMode === "insights", []),
         100
       );
     }
@@ -777,11 +789,21 @@ export default function TransactionPage() {
   const showTransactionDetails = async (transaction: Transaction) => {
     setSelectedTransaction(transaction);
     setShowDetailsModal(true);
+    // Reset details so stale graylog/attrs from previous trx don't linger
+    setTransactionDetails({
+      attributes: [],
+      endpoints: [],
+      graylog: [],
+      graylogError: null,
+    });
 
     if (selectedConnection) {
+      const uuid = transaction["UUID"] || (transaction as any).uuid;
+      const trxId = transaction["Trx ID"] ?? (transaction as any).trx_id;
+
       api.getTransactionAttributes(
         selectedConnection,
-        transaction["Trx ID"].toString(),
+        trxId?.toString(),
         (data) => {
           const attrs = Array.isArray(data)
             ? data
@@ -794,18 +816,34 @@ export default function TransactionPage() {
       );
       api.getTransactionEndpoints(
         selectedConnection,
-        transaction["UUID"],
+        uuid,
         (data) => {
           setTransactionDetails((prev) => ({ ...prev, endpoints: data }));
         }
       );
-      api.getGrayLogData(
-        selectedConnection,
-        transaction["Trx ID"].toString(),
-        (data) => {
-          setTransactionDetails((prev) => ({ ...prev, graylog: data }));
-        }
-      );
+      // GrayLog must be searched by UUID, not Trx ID
+      if (uuid) {
+        api.getGrayLogData(
+          selectedConnection,
+          uuid,
+          (response) => {
+            const graylogMessages =
+              response?.data?.messages || response?.messages || [];
+            setTransactionDetails((prev) => ({
+              ...prev,
+              graylog: graylogMessages,
+              graylogError: null,
+            }));
+          },
+          (errorMessage) => {
+            setTransactionDetails((prev) => ({
+              ...prev,
+              graylog: [],
+              graylogError: errorMessage,
+            }));
+          }
+        );
+      }
     }
   };
 
@@ -1385,15 +1423,26 @@ export default function TransactionPage() {
       );
 
       if (uuid) {
-        api.getGrayLogData(selectedConnection, uuid, (response) => {
-          // Extract messages from the new API response structure
-          const graylogMessages =
-            response?.data?.messages || response?.messages || [];
-          setTransactionDetails((prev) => ({
-            ...prev,
-            graylog: graylogMessages,
-          }));
-        });
+        api.getGrayLogData(
+          selectedConnection,
+          uuid,
+          (response) => {
+            const graylogMessages =
+              response?.data?.messages || response?.messages || [];
+            setTransactionDetails((prev) => ({
+              ...prev,
+              graylog: graylogMessages,
+              graylogError: null,
+            }));
+          },
+          (errorMessage) => {
+            setTransactionDetails((prev) => ({
+              ...prev,
+              graylog: [],
+              graylogError: errorMessage,
+            }));
+          }
+        );
       }
     }
   };
@@ -1453,289 +1502,277 @@ export default function TransactionPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="flex">
-        <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+      <div className="flex h-screen">
+        <div className="flex-shrink-0">
+          <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+        </div>
 
-        <div className="flex-1 max-w-full overflow-hidden">
-          {/* Header with Breadcrumb */}
-          <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
             <div className="flex items-center space-x-2 text-sm text-gray-500">
               <span>Jalin App</span>
               <span>/</span>
-              <span className="text-gray-800 font-medium">Transaction</span>
+              <span className="text-gray-800 font-medium">Transactions</span>
             </div>
           </div>
 
-          <div className="p-6 max-w-full space-y-6">
-            <div className="bg-blue-50 rounded-3xl p-6 border border-blue-200">
-              <h1 className="text-2xl font-semibold text-gray-800 mb-2">
-                Transaction Overview
-              </h1>
-              <p className="text-gray-600">
-                Search, filter, and analyze real-time transaction data.
-              </p>
-            </div>
-
-            <TransactionFilters
-              connectionProfiles={connectionProfiles}
-              selectedConnection={selectedConnection}
-              onConnectionChange={setSelectedConnection}
-              dateStart={dateStart}
-              dateEnd={dateEnd}
-              onDateStartChange={setDateStart}
-              onDateEndChange={setDateEnd}
-              dynamicFilters={dynamicFilters}
-              onAddFilter={addFilter}
-              onRemoveFilter={removeFilter}
-              onUpdateFilter={updateFilter}
-              searchTerm={searchTerm}
-              onSearchTermChange={setSearchTerm}
-              onSearch={() =>
-                handleSearch(
-                  1,
-                  paginationState.pageSize,
-                  viewMode === "insights"
-                )
-              }
-              onClearFilters={clearFilters}
-              showFilters={showFilters}
-              onToggleFilters={() => setShowFilters(!showFilters)}
-              showColumnManager={false}
-              onToggleColumnManager={() => {}}
-              isLoading={api.loading}
-              error={api.error}
-              onRetry={retryConnection}
-              onClearError={api.clearError}
-              searchResults={searchResults}
-              pageSize={paginationState.pageSize}
-              onPageSizeChange={changePageSize}
-              onGlobalSearch={handleGlobalSearch}
-              columnFilters={columnFilters}
-              onColumnFilter={(key, value) =>
-                setColumnFilters((prev) => ({ ...prev, [key]: value }))
-              }
-              onClearColumnFilters={clearAllColumnFilters}
-              filterFields={filterFields}
-              filterOperators={filterOperators}
-              queryInfo={queryInfo}
-              showQuerySection={showQuerySection}
-              onToggleQuerySection={() =>
-                setShowQuerySection(!showQuerySection)
-              }
-              resultCodeFilter={resultCodeFilter}
-              onResultCodeFilterChange={setResultCodeFilter}
-              messageTypeFilter={undefined}
-              onMessageTypeFilterChange={undefined}
-              transactionStatusFilter={transactionStatusFilter}
-              onTransactionStatusFilterChange={setTransactionStatusFilter}
-            />
-
-            <div className="flex justify-end mb-4">
-              <div className="inline-flex rounded-full border border-gray-200 bg-white p-1 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => handleViewModeChange("table")}
-                  className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
-                    viewMode === "table"
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                  aria-pressed={viewMode === "table"}
-                >
-                  <Table className="h-4 w-4 mr-2 inline" />
-                  Table View
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleViewModeChange("insights")}
-                  className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
-                    viewMode === "insights"
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                  aria-pressed={viewMode === "insights"}
-                >
-                  <BarChart className="h-4 w-4 mr-2 inline" />
-                  Insights
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleViewModeChange("saved")}
-                  className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
-                    viewMode === "saved"
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                  aria-pressed={viewMode === "saved"}
-                >
-                  <FileText className="h-4 w-4 mr-2 inline" />
-                  Saved
-                </button>
+          <div className="flex-1 overflow-auto">
+            <div className="p-6 space-y-6">
+            <div className="bg-blue-50 rounded-2xl p-6 border border-blue-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-2xl font-semibold text-gray-800 mb-2">
+                    Transactions
+                  </h1>
+                  <p className="text-gray-600">
+                    Filter transactions, lalu kelola data dari hasil pencarian
+                  </p>
+                </div>
+                <CreditCard className="h-8 w-8 text-blue-600" />
               </div>
             </div>
 
-            {viewMode === "saved" && (
-              <SavedTransactions
-                isActive={viewMode === "saved"}
-                onTransactionClick={(transaction, additionalData) => {
-                  setSelectedTransaction(transaction);
-                  if (additionalData) {
-                    setSavedTransactionDetails({
-                      attributes: additionalData.attributes || [],
-                      endpoints: additionalData.endpoints || [],
-                      graylog: additionalData.graylog_data || [], // Map graylog_data to graylog
-                    });
-                  } else {
-                    setSavedTransactionDetails(null);
-                  }
-                  setShowDetailsModal(true);
-                }}
+            <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-6">
+              <TransactionFilters
+                connectionProfiles={connectionProfiles}
+                selectedConnection={selectedConnection}
+                onConnectionChange={setSelectedConnection}
+                dateStart={dateStart}
+                dateEnd={dateEnd}
+                onDateStartChange={setDateStart}
+                onDateEndChange={setDateEnd}
+                dynamicFilters={dynamicFilters}
+                onAddFilter={addFilter}
+                onRemoveFilter={removeFilter}
+                onUpdateFilter={updateFilter}
+                searchTerm={searchTerm}
+                onSearchTermChange={setSearchTerm}
+                onSearch={() =>
+                  handleSearch(
+                    1,
+                    paginationState.pageSize,
+                    viewMode === "insights"
+                  )
+                }
+                onClearFilters={clearFilters}
+                showFilters={showFilters}
+                onToggleFilters={() => setShowFilters(!showFilters)}
+                showColumnManager={false}
+                onToggleColumnManager={() => {}}
+                isLoading={api.loading}
+                error={api.error}
+                onRetry={retryConnection}
+                onClearError={api.clearError}
+                searchResults={searchResults}
+                pageSize={paginationState.pageSize}
+                onPageSizeChange={changePageSize}
+                onGlobalSearch={handleGlobalSearch}
+                columnFilters={columnFilters}
+                onColumnFilter={(key, value) =>
+                  setColumnFilters((prev) => ({ ...prev, [key]: value }))
+                }
+                onClearColumnFilters={clearAllColumnFilters}
+                filterFields={filterFields}
+                filterOperators={filterOperators}
+                queryInfo={queryInfo}
+                showQuerySection={showQuerySection}
+                onToggleQuerySection={() =>
+                  setShowQuerySection(!showQuerySection)
+                }
+                resultCodeFilter={resultCodeFilter}
+                onResultCodeFilterChange={setResultCodeFilter}
+                transactionStatusFilter={transactionStatusFilter}
+                onTransactionStatusFilterChange={setTransactionStatusFilter}
               />
-            )}
 
-            {viewMode === "table" && searchResults && (
-              <Card className="shadow-sm border-0 bg-white rounded-3xl">
-                <CardHeader className="pb-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-lg">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                      <div className="flex items-center space-x-3">
-                        <div className="bg-green-100 rounded-lg p-2">
-                          <Activity className="h-5 w-5 text-green-600" />
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-gray-800">
-                            Transaction Results
-                          </h3>
-                          <div className="flex items-center space-x-3 mt-1">
-                            <span className="text-sm text-gray-600">
-                              {searchTerm.trim() ? (
-                                <>
-                                  {searchResults.total.toLocaleString()}{" "}
-                                  transactions found
-                                </>
-                              ) : (
-                                <>
-                                  {searchResults.total.toLocaleString()}{" "}
-                                  transactions found
-                                </>
-                              )}
-                            </span>
-                            <Badge
-                              variant="secondary"
-                              className="bg-green-100 text-green-700"
-                            >
-                              {searchResults.executionTime}ms
-                            </Badge>
-                          </div>
-                        </div>
-                      </div>
+              <div className="flex justify-end">
+                <div className="inline-flex rounded-full border border-gray-200 bg-white p-1 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => handleViewModeChange("table")}
+                    className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
+                      viewMode === "table"
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                    aria-pressed={viewMode === "table"}
+                  >
+                    <Table className="h-4 w-4 mr-2 inline" />
+                    Table View
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleViewModeChange("insights")}
+                    className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
+                      viewMode === "insights"
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                    aria-pressed={viewMode === "insights"}
+                  >
+                    <BarChart className="h-4 w-4 mr-2 inline" />
+                    Insights
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleViewModeChange("saved")}
+                    className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
+                      viewMode === "saved"
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                    aria-pressed={viewMode === "saved"}
+                  >
+                    <FileText className="h-4 w-4 mr-2 inline" />
+                    Saved
+                  </button>
+                </div>
+              </div>
+
+              {viewMode === "saved" ? (
+                <SavedTransactions
+                  isActive={viewMode === "saved"}
+                  onTransactionClick={(transaction, additionalData) => {
+                    setSelectedTransaction(transaction);
+                    if (additionalData) {
+                      setSavedTransactionDetails({
+                        attributes: additionalData.attributes || [],
+                        endpoints: additionalData.endpoints || [],
+                        graylog: additionalData.graylog_data || [],
+                      });
+                    } else {
+                      setSavedTransactionDetails(null);
+                    }
+                    setShowDetailsModal(true);
+                  }}
+                />
+              ) : viewMode === "insights" ? (
+                <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center gap-2 text-sm font-medium text-gray-700">
+                    <BarChart className="h-4 w-4 text-gray-500" />
+                    Insights transactions
+                  </div>
+                  <div className="p-4">
+                    <TransactionInsights
+                      transactions={insightsTransactions}
+                      totalTransactions={insightsTransactions.length}
+                      dateRange={getDateRangeString()}
+                      isLoading={api.loading}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-gray-700">
+                      <Database className="h-4 w-4 text-gray-500" />
+                      Hasil transactions
+                      <Badge variant="secondary" className="font-normal">
+                        {paginationState.totalRows} total
+                      </Badge>
                       {selectedRows.size > 0 && (
                         <Badge
                           variant="secondary"
-                          className="bg-blue-100 text-blue-700"
+                          className="bg-blue-100 text-blue-700 font-normal"
                         >
                           {selectedRows.size} selected
                         </Badge>
                       )}
+                      {searchResults?.executionTime !== undefined && (
+                        <Badge
+                          variant="secondary"
+                          className="bg-blue-100 text-blue-700 font-normal"
+                        >
+                          {searchResults.executionTime}ms
+                        </Badge>
+                      )}
                     </div>
-                    <div className="flex items-center space-x-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
                       <Button
                         onClick={() => setShowSaveModal(true)}
                         variant="outline"
                         size="sm"
                         disabled={selectedRows.size === 0}
-                        className="rounded-full bg-white"
+                        className="h-8"
                       >
-                        <Database className="h-4 w-4 mr-2" />
+                        <Database className="h-3.5 w-3.5 mr-1" />
                         Save ({selectedRows.size})
                       </Button>
                       <Button
                         onClick={() => setShowExportModal(true)}
-                        className="h-9 rounded-full bg-blue-600 hover:bg-blue-700 text-white px-4"
+                        size="sm"
+                        className="h-8"
                       >
-                        Export HTML
+                        Export
                       </Button>
+                      <span>Per halaman</span>
+                      <Select
+                        value={String(paginationState.pageSize)}
+                        onValueChange={(v) => changePageSize(Number(v))}
+                      >
+                        <SelectTrigger className="h-8 w-[84px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {[10, 20, 50, 100].map((n) => (
+                            <SelectItem key={n} value={String(n)}>
+                              {n}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
-                </CardHeader>
-                <CardContent className="p-6">
-                  <TransactionTable
-                    transactions={transactions}
-                    selectedRows={selectedRows}
-                    onRowSelect={handleRowSelect}
-                    onRowSelectAll={handleRowSelectAll}
-                    onRowDoubleClick={showTransactionDetails}
-                    onContextMenu={handleRightClick}
-                    sortConfig={sortConfig}
-                    onSort={handleSort}
-                    columnFilters={columnFilters}
-                    onColumnFilter={(key, value) =>
-                      setColumnFilters((prev) => ({ ...prev, [key]: value }))
-                    }
-                    hiddenColumns={hiddenColumns}
-                    onColumnVisibilityChange={(columnKey) => {
-                      const newHidden = new Set(hiddenColumns);
-                      if (newHidden.has(columnKey)) {
-                        newHidden.delete(columnKey);
-                      } else {
-                        newHidden.add(columnKey);
+
+                  {!selectedConnection && !api.error ? (
+                    <div className="p-10 text-center text-gray-500 text-sm">
+                      Pilih profile, atur filter bila perlu, lalu klik &quot;Cari
+                      Transactions&quot;.
+                    </div>
+                  ) : searchResults ? (
+                    <TransactionTable
+                      transactions={transactions}
+                      selectedRows={selectedRows}
+                      onRowSelect={handleRowSelect}
+                      onRowSelectAll={handleRowSelectAll}
+                      onRowDoubleClick={showTransactionDetails}
+                      onContextMenu={handleRightClick}
+                      sortConfig={sortConfig}
+                      onSort={handleSort}
+                      columnFilters={columnFilters}
+                      onColumnFilter={(key, value) =>
+                        setColumnFilters((prev) => ({
+                          ...prev,
+                          [key]: value,
+                        }))
                       }
-                      setHiddenColumns(newHidden);
-                    }}
-                    paginationState={paginationState}
-                    onPageChange={(page) =>
-                      handleSearch(page, paginationState.pageSize, false)
-                    }
-                    onPageSizeChange={changePageSize}
-                    isPaginationLoading={isPaginationLoading}
-                    onRowClick={handleRowClick}
-                  />
-                </CardContent>
-              </Card>
-            )}
-
-            {viewMode === "insights" && (
-              <TransactionInsights
-                transactions={insightsTransactions}
-                totalTransactions={insightsTransactions.length}
-                dateRange={getDateRangeString()}
-                isLoading={api.loading}
-              />
-            )}
-
-            {!selectedConnection && !api.error && (
-              <Card className="shadow-sm border-0 rounded-3xl">
-                <CardContent className="p-12 text-center">
-                  <div className="max-w-md mx-auto">
-                    <div className="bg-blue-50 rounded-full p-6 w-24 h-24 mx-auto mb-6 flex items-center justify-center">
-                      <Database className="h-12 w-12 text-blue-600" />
+                      hiddenColumns={hiddenColumns}
+                      onColumnVisibilityChange={(columnKey) => {
+                        const newHidden = new Set(hiddenColumns);
+                        if (newHidden.has(columnKey)) {
+                          newHidden.delete(columnKey);
+                        } else {
+                          newHidden.add(columnKey);
+                        }
+                        setHiddenColumns(newHidden);
+                      }}
+                      paginationState={paginationState}
+                      onPageChange={(page) =>
+                        handleSearch(page, paginationState.pageSize, false)
+                      }
+                      onPageSizeChange={changePageSize}
+                      isPaginationLoading={isPaginationLoading}
+                      onRowClick={handleRowClick}
+                    />
+                  ) : (
+                    <div className="p-10 text-center text-gray-500 text-sm">
+                      Pilih profile, atur filter bila perlu, lalu klik &quot;Cari
+                      Transactions&quot;.
                     </div>
-                    <h3 className="text-xl font-semibold text-gray-800 mb-3">
-                      Select a Database Connection
-                    </h3>
-                    <p className="text-gray-600 mb-6">
-                      Choose a database connection profile above to start
-                      searching for transactions. You can filter by date range,
-                      transaction type, and more.
-                    </p>
-                    <div className="flex items-center justify-center space-x-2 text-sm text-gray-500">
-                      <Badge variant="outline">
-                        <Activity className="h-3 w-3 mr-1" />
-                        Real-time data
-                      </Badge>
-                      <Badge variant="outline">
-                        <Search className="h-3 w-3 mr-1" />
-                        Advanced filtering
-                      </Badge>
-                      <Badge variant="outline">
-                        <Database className="h-3 w-3 mr-1" />
-                        Export options
-                      </Badge>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
+                  )}
+                </div>
+              )}
+            </div>
 
             {contextMenu.visible && (
               <div
@@ -1822,6 +1859,7 @@ export default function TransactionPage() {
                 onClick={() => setContextMenu({ visible: false, x: 0, y: 0 })}
               />
             )}
+            </div>
           </div>
         </div>
       </div>

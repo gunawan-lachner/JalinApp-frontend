@@ -1,12 +1,13 @@
 // API configuration and utilities with JWT authentication
 import { tokenManager } from "@/lib/auth"
+import { getApiBaseUrl } from "@/lib/api-base"
 import type { ParticipantSearchResponse as ParticipantSearchResponseInterface } from "./types"
 import type { ParticipantSearchParams as ParticipantSearchParamsInterface } from "./types"
 import axios from "axios"
 import type { ConnectionProfile } from "./types"
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api"
 const API_TIMEOUT = Number.parseInt(process.env.NEXT_PUBLIC_API_TIMEOUT || "30000")
+const getBaseUrl = () => getApiBaseUrl()
 
 // Define a generic API response structure
 interface ApiResponse<T> {
@@ -237,6 +238,46 @@ export interface SendPacketResponse {
     connectionLogs?: ConnectionLog[]
   }
   error?: string
+}
+
+export interface StressTestRequest {
+  packet_id?: number
+  packet: {
+    hex: string
+    address: string
+    port: number
+    protocol: string
+    ascii?: string
+  }
+  mode: "count" | "duration"
+  count: number
+  duration_sec: number
+  concurrency: number
+  delay_ms: number
+  increment_stan: boolean
+}
+
+export interface StressTestSnapshot {
+  job_id: string
+  status: "running" | "completed" | "stopped" | "failed"
+  mode: "count" | "duration"
+  duration_sec: number
+  total: number
+  completed: number
+  success_count: number
+  fail_count: number
+  elapsed_ms: number
+  rps: number
+  tps?: number
+  latency_ms: {
+    min: number
+    avg: number
+    max: number
+    p95: number
+  }
+  errors: Array<{ message: string; count: number }>
+  target: string
+  protocol: string
 }
 
 export interface ExportTransactionRequest {
@@ -631,7 +672,7 @@ async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<
   const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT)
 
   try {
-    const fullUrl = `${API_BASE_URL}${endpoint}`
+    const fullUrl = `${getBaseUrl()}${endpoint}`
     console.log(`🌐 Making API call to: ${fullUrl}`)
     console.log(`📋 Method: ${options.method || "GET"}`)
     if (options.body) {
@@ -762,7 +803,7 @@ async function apiFileDownload(endpoint: string, options: RequestInit = {}): Pro
   const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT)
 
   try {
-    const fullUrl = `${API_BASE_URL}${endpoint}`
+    const fullUrl = `${getBaseUrl()}${endpoint}`
     console.log(`📥 Making file download API call to: ${fullUrl}`)
     console.log(`📋 Method: ${options.method || "GET"}`)
 
@@ -966,7 +1007,7 @@ export const rnaApi = {
   sshClientExecute: async (
     connection_name: string,
     command: string,
-  ): Promise<ApiResponse<{ success: boolean; output?: string; error?: string }>> => {
+  ): Promise<ApiResponse<{ success: boolean; output?: string; error?: string; exit_code?: number }>> => {
     return apiCall("/ssh/client/execute", {
       method: "POST",
       body: JSON.stringify({ connection_name, command }),
@@ -1103,12 +1144,34 @@ export const rnaApi = {
         name: string
         content: string
         size: number
+        mtime?: number
+        modified_at?: string
       }
       execution_time?: number
       error: string | null
     }>
   > => {
     return apiCall("/renjs/files/read", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    })
+  },
+
+  renjsStatFile: async (
+    path: string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        path: string
+        size: number
+        mtime: number
+        modified_at?: string
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/renjs/files/stat", {
       method: "POST",
       body: JSON.stringify({ path }),
     })
@@ -1124,6 +1187,8 @@ export const rnaApi = {
         path: string
         name: string
         size: number
+        mtime?: number
+        modified_at?: string
       }
       execution_time?: number
       error: string | null
@@ -1415,6 +1480,222 @@ export const rnaApi = {
     return apiCall("/renjs/scripts/history/clear", {
       method: "POST",
       body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  // GMM XSLT mapping APIs (gmm_xslt_mapping)
+  gmmListXslt: async (
+    profileId: string,
+    search?: string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        mappings: Array<{
+          id: number
+          name: string
+          usercomment: string
+          hash?: string | null
+          last_mod?: string
+        }>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/list", {
+      method: "POST",
+      body: JSON.stringify({ profileId, search: search || "" }),
+    })
+  },
+
+  gmmGetXslt: async (
+    profileId: string,
+    id: number,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        mapping: {
+          id: number
+          name: string
+          usercomment: string
+          content: string
+          hash?: string | null
+          last_mod?: string
+        }
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/get", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  gmmSaveXslt: async (payload: {
+    profileId: string
+    mode: "overwrite" | "new"
+    content: string
+    id?: number
+    name?: string
+    usercomment?: string
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        mode: string
+        mapping: {
+          id: number
+          name: string
+          usercomment: string
+          content?: string
+          hash?: string | null
+          last_mod?: string
+        }
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/save", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  gmmXsltHistory: async (
+    profileId: string,
+    id: number,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        history: Array<{
+          id: number
+          mapping_id: number
+          version?: number
+          hash?: string
+          checksum?: string
+          usercomment?: string | null
+          comment?: string | null
+          created_at?: string
+          content_length?: number
+        }>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/history", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  gmmXsltHistoryGet: async (
+    profileId: string,
+    history_id: number,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        history: {
+          id: number
+          mapping_id: number
+          version?: number
+          content: string
+          hash?: string
+          checksum?: string
+          usercomment?: string | null
+          comment?: string | null
+          created_at?: string
+        }
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/history/get", {
+      method: "POST",
+      body: JSON.stringify({ profileId, history_id }),
+    })
+  },
+
+  gmmXsltHistoryDelete: async (
+    profileId: string,
+    history_id: number,
+  ): Promise<ApiResponse<{ success: boolean; data: { id: number; deleted: number }; error: string | null }>> => {
+    return apiCall("/gmm/xslt/history/delete", {
+      method: "POST",
+      body: JSON.stringify({ profileId, history_id }),
+    })
+  },
+
+  gmmXsltHistoryClear: async (
+    profileId: string,
+    id: number,
+  ): Promise<
+    ApiResponse<{ success: boolean; data: { mapping_id: number; deleted: number }; error: string | null }>
+  > => {
+    return apiCall("/gmm/xslt/history/clear", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  // GMM ISO8583 plugin APIs (gmm_iso8583_plugin)
+  gmmListIso8583: async (
+    profileId: string,
+    search?: string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        columns: string[]
+        plugins: Array<Record<string, unknown>>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/iso8583/list", {
+      method: "POST",
+      body: JSON.stringify({ profileId, search: search || "" }),
+    })
+  },
+
+  // GMM data definition APIs (gmm_data_definition)
+  gmmGetDataDefinition: async (
+    profileId: string,
+    id: number,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        definition: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/data-definition/get", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  gmmUpdateDataDefinition: async (payload: {
+    profileId: string
+    id: number
+    fields: Record<string, unknown>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        definition: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/data-definition/update", {
+      method: "POST",
+      body: JSON.stringify(payload),
     })
   },
 
@@ -1782,7 +2063,7 @@ export const rnaApi = {
       body: JSON.stringify({
         uuid: uuid,
         connection: connection,
-        days_back: 2,
+        days_back: 7,
         limit: 100,
       }),
     })
@@ -1972,6 +2253,9 @@ export const rnaApi = {
     if (params.column_filters && Object.keys(params.column_filters).length > 0) {
       body.column_filters = params.column_filters
     }
+    if (params.filters && params.filters.length > 0) {
+      body.filters = params.filters
+    }
     const response = await apiCall<ParticipantSearchResponse>("/participant", {
       method: "POST",
       body: JSON.stringify(body),
@@ -2012,6 +2296,174 @@ export const rnaApi = {
       }
     }
     return response
+  },
+
+  getContainerPluginFilterMeta: async (): Promise<
+    ApiResponse<{
+      filterFields: Array<{ label: string; value: string; table?: string }>
+      filterOperators: Array<{ label: string; value: string }>
+    }>
+  > => {
+    return apiCall("/participant/containerPlugin/meta", {
+      method: "GET",
+    })
+  },
+
+  listContainerPluginNames: async (params: {
+    profileId: string
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: string[]
+      error?: string | null
+    }>
+  > => {
+    return apiCall("/participant/containerPlugin/names", {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
+  },
+
+  searchContainerPlugins: async (params: {
+    profileId: string
+    page?: number
+    page_size?: number
+    search?: string
+    filters?: Array<{ field: string; operator: string; value: string }>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: ContainerPlugin[]
+      total_rows: number
+      page: number
+      page_size: number
+      execution_time?: number
+      filterFields?: Array<{ label: string; value: string; table?: string }>
+      filterOperators?: Array<{ label: string; value: string }>
+      error?: string | null
+    }>
+  > => {
+    return apiCall("/participant/containerPlugin/search", {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
+  },
+
+  getContainerPluginDetailById: async (params: {
+    profileId: string
+    id?: number | string
+    name?: string
+    filters?: Array<{ field: string; operator: string; value: string }>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        plugin: ContainerPlugin
+        attrs: Array<{
+          id: number
+          container_plugin_id: number
+          field: string
+          content: string
+        }>
+        filtered_attrs: Array<{
+          id: number
+          container_plugin_id: number
+          field: string
+          content: string
+        }>
+      }
+      execution_time?: number
+      error?: string | null
+    }>
+  > => {
+    return apiCall("/participant/containerPlugin/detail", {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
+  },
+
+  updateContainerPlugin: async (
+    pluginId: number | string,
+    payload: {
+      profileId: string
+      [key: string]: unknown
+      attrs?: Array<{
+        id?: number
+        field?: string
+        content?: string
+        _delete?: boolean
+      }>
+    },
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      message?: string
+      data: {
+        plugin: ContainerPlugin
+        attrs: Array<{
+          id: number
+          container_plugin_id: number
+          field: string
+          content: string
+        }>
+      }
+      error?: string
+    }>
+  > => {
+    return apiCall(`/participant/containerPlugin/${pluginId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  getPluginTableDetail: async (params: {
+    profileId: string
+    id: number | string
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: Record<string, unknown>
+      error?: string | null
+    }>
+  > => {
+    return apiCall("/participant/plugin/detail", {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
+  },
+
+  updatePluginTableRow: async (
+    pluginId: number | string,
+    payload: { profileId: string; [key: string]: unknown },
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      message?: string
+      data: Record<string, unknown>
+      error?: string
+    }>
+  > => {
+    return apiCall(`/participant/plugin/${pluginId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  getParticipantByContainerPluginName: async (params: {
+    profileId: string
+    container_plugin_name: string
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: Participant[]
+      total_rows?: number
+      error?: string | null
+    }>
+  > => {
+    return apiCall("/participant/by-container-plugin", {
+      method: "POST",
+      body: JSON.stringify(params),
+    })
   },
 
   // New: Participant Duplication methods
@@ -2514,6 +2966,8 @@ export const rnaApi = {
       gateway_id?: number
       participant_iss_id?: number
       participant_acq_id?: number
+      rule?: string
+      description?: string
     },
   ): Promise<ApiResponse<{ success: boolean; message: string; updated_fields?: any }>> => {
     return apiCall(`/bin-routing/routes/${routeId}`, {
@@ -3003,6 +3457,33 @@ export const rnaApi = {
     })
   },
 
+  startNetworkStressTest: async (
+    request: StressTestRequest,
+  ): Promise<ApiResponse<{ success: boolean; data: StressTestSnapshot }>> => {
+    return apiCall<{ success: boolean; data: StressTestSnapshot }>("/network-message/stress-test", {
+      method: "POST",
+      body: JSON.stringify(request),
+    })
+  },
+
+  getNetworkStressTest: async (
+    jobId: string,
+  ): Promise<ApiResponse<{ success: boolean; data: StressTestSnapshot }>> => {
+    return apiCall<{ success: boolean; data: StressTestSnapshot }>(
+      `/network-message/stress-test/${jobId}`,
+      { method: "GET" },
+    )
+  },
+
+  stopNetworkStressTest: async (
+    jobId: string,
+  ): Promise<ApiResponse<{ success: boolean; data: StressTestSnapshot }>> => {
+    return apiCall<{ success: boolean; data: StressTestSnapshot }>(
+      `/network-message/stress-test/${jobId}/stop`,
+      { method: "POST" },
+    )
+  },
+
   // SSH Transfer APIs
   uploadFilesSingle: async (request: {
     connection_name: string
@@ -3330,7 +3811,7 @@ export const rnaApi = {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT)
 
-      const response = await fetch(`${API_BASE_URL}/ssh/file-manager/upload`, {
+      const response = await fetch(`${getBaseUrl()}/ssh/file-manager/upload`, {
         method: "POST",
         signal: controller.signal,
         headers,
@@ -3406,7 +3887,7 @@ interface RnaApi {
 
 export const createRnaApi = (): RnaApi => {
   const api = axios.create({
-    baseURL: API_BASE_URL,
+    baseURL: getBaseUrl(),
     headers: {
       "Content-Type": "application/json",
     },

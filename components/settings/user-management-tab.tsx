@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { authApi, tokenManager, type AuthUser, type Role } from "@/lib/auth";
+import { getApiBaseUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,18 +66,21 @@ const ROLE_COLOR_MAP_SELECTED: Record<string, string> = {
 
 interface UserFormData {
   username: string;
+  full_name: string;
   password: string;
   id_role: number; // Changed from user_level to id_role
 }
 
 interface CreateUserRequest {
   username: string;
+  full_name?: string;
   password: string;
   id_role: number; // Changed from user_level to id_role
 }
 
 interface UpdateUserRequest {
   username?: string;
+  full_name?: string;
   password?: string;
   id_role?: number; // Changed from user_level to id_role
 }
@@ -108,6 +112,7 @@ export function UserManagementTab() {
   const [selectedUser, setSelectedUser] = useState<AuthUser | null>(null);
   const [userFormData, setUserFormData] = useState<UserFormData>({
     username: "",
+    full_name: "",
     password: "",
     id_role: 0, // Will be set after roles are fetched
   });
@@ -144,9 +149,7 @@ export function UserManagementTab() {
           throw new Error("No authentication token found");
         }
 
-        const fullUrl = `${
-          process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"
-        }${endpoint}`;
+        const fullUrl = `${getApiBaseUrl()}${endpoint}`;
 
         const response = await fetch(fullUrl, {
           ...options,
@@ -267,6 +270,7 @@ export function UserManagementTab() {
       setError("");
       const createUserData: CreateUserRequest = {
         username: userFormData.username,
+        full_name: userFormData.full_name.trim(),
         password: userFormData.password,
         id_role: userFormData.id_role,
       };
@@ -306,6 +310,7 @@ export function UserManagementTab() {
       setError("");
       const updateData: UpdateUserRequest = {
         username: userFormData.username,
+        full_name: userFormData.full_name.trim(),
         id_role: userFormData.id_role,
       };
       if (userFormData.password) {
@@ -463,6 +468,7 @@ export function UserManagementTab() {
   const resetUserForm = () => {
     setUserFormData({
       username: "",
+      full_name: "",
       password: "",
       id_role: roles[0]?.id_role || 0, // Reset to first available role ID
     });
@@ -485,6 +491,7 @@ export function UserManagementTab() {
     setSelectedUser(user);
     setUserFormData({
       username: user.username,
+      full_name: user.full_name || "",
       password: "", // Password is not pre-filled for security
       id_role: user.id_role,
     });
@@ -656,6 +663,9 @@ export function UserManagementTab() {
                           User
                         </th>
                         <th className="text-left py-3 px-4 font-medium text-gray-700">
+                          Nama Lengkap
+                        </th>
+                        <th className="text-left py-3 px-4 font-medium text-gray-700">
                           Access Level
                         </th>
                         <th className="text-right py-3 px-4 font-medium text-gray-700">
@@ -673,7 +683,9 @@ export function UserManagementTab() {
                             <div className="flex items-center space-x-3">
                               <div className="bg-gray-100 rounded-full p-2 w-10 h-10 flex items-center justify-center">
                                 <span className="text-sm font-medium text-gray-600">
-                                  {user.username.charAt(0).toUpperCase()}
+                                  {(user.full_name || user.username)
+                                    .charAt(0)
+                                    .toUpperCase()}
                                 </span>
                               </div>
                               <div>
@@ -685,6 +697,11 @@ export function UserManagementTab() {
                                 </p>
                               </div>
                             </div>
+                          </td>
+                          <td className="py-4 px-4">
+                            <p className="text-sm text-gray-800">
+                              {user.full_name?.trim() ? user.full_name : "—"}
+                            </p>
                           </td>
                           <td className="py-4 px-4">
                             <div
@@ -880,6 +897,21 @@ export function UserManagementTab() {
               />
             </div>
             <div>
+              <Label htmlFor="create-full-name">Nama Lengkap</Label>
+              <Input
+                id="create-full-name"
+                value={userFormData.full_name}
+                onChange={(e) =>
+                  setUserFormData((prev) => ({
+                    ...prev,
+                    full_name: e.target.value,
+                  }))
+                }
+                placeholder="Masukkan nama lengkap"
+                className="rounded-full border-gray-300"
+              />
+            </div>
+            <div>
               <Label htmlFor="create-password">Password</Label>
               <Input
                 id="create-password"
@@ -972,6 +1004,21 @@ export function UserManagementTab() {
                   }))
                 }
                 placeholder="Enter username"
+                className="rounded-full border-gray-300"
+              />
+            </div>
+            <div>
+              <Label htmlFor="edit-full-name">Nama Lengkap</Label>
+              <Input
+                id="edit-full-name"
+                value={userFormData.full_name}
+                onChange={(e) =>
+                  setUserFormData((prev) => ({
+                    ...prev,
+                    full_name: e.target.value,
+                  }))
+                }
+                placeholder="Masukkan nama lengkap"
                 className="rounded-full border-gray-300"
               />
             </div>

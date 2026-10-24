@@ -8,7 +8,6 @@ import {
   X,
   Database,
   Activity,
-  Search,
   Users,
   Pencil,
   Trash2,
@@ -21,7 +20,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +36,7 @@ import type {
   ConnectionProfile,
   Participant,
   ContainerPlugin,
+  ParticipantDynamicFilter,
 } from "@/lib/types";
 import { ParticipantTable } from "@/components/rna/participant-table";
 import { ParticipantFilters } from "@/components/rna/participant-filters";
@@ -49,6 +48,17 @@ import {
   type ParticipantFormValues,
 } from "@/components/rna/participant-form-modal";
 
+function createEmptyParticipantFilter(): ParticipantDynamicFilter {
+  return { field: "name", operator: "LIKE", value: "" };
+}
+
+function isActiveParticipantFilter(f: ParticipantDynamicFilter): boolean {
+  return (
+    f.operator === "IS_EMPTY" ||
+    f.operator === "IS_NOT_EMPTY" ||
+    f.value.trim() !== ""
+  );
+}
 
 export default function ParticipantPage() {
   const router = useRouter();
@@ -76,7 +86,9 @@ export default function ParticipantPage() {
     return 20;
   });
   const [searchTerm, setSearchTerm] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [dynamicFilters, setDynamicFilters] = useState<
+    ParticipantDynamicFilter[]
+  >([createEmptyParticipantFilter()]);
   const [sortConfig, setSortConfig] = useState<{
     key: string;
     direction: "asc" | "desc";
@@ -192,7 +204,12 @@ export default function ParticipantPage() {
 
   const handleSearch = async (
     newPage = 1,
-    newPageSize = paginationState.pageSize
+    newPageSize = paginationState.pageSize,
+    overrides?: {
+      search?: string;
+      filters?: ParticipantDynamicFilter[];
+      columnFilters?: Record<string, string>;
+    }
   ) => {
     if (!selectedConnection) {
       console.warn("⚠️ No connection selected, skipping participant search");
@@ -201,23 +218,35 @@ export default function ParticipantPage() {
 
     const requestId = ++latestParticipantRequestId.current;
     setIsPaginationLoading(true);
+    const searchToUse =
+      overrides?.search !== undefined ? overrides.search : searchTerm;
+    const filtersToUse =
+      overrides?.filters !== undefined ? overrides.filters : dynamicFilters;
+    const columnFiltersToUse =
+      overrides?.columnFilters !== undefined
+        ? overrides.columnFilters
+        : columnFilters;
+
     console.log(
       `🔍 Searching participants page ${newPage} with ${newPageSize} items per page`
     );
     console.log(`🔗 Connection: ${selectedConnection}`);
-    console.log(`🔎 Search Term: ${searchTerm}`);
+    console.log(`🔎 Search Term: ${searchToUse}`);
 
     const column_filters: Record<string, string> = {}
-    Object.entries(columnFilters).forEach(([k, v]) => {
+    Object.entries(columnFiltersToUse).forEach(([k, v]) => {
       if (v && String(v).trim()) column_filters[k] = String(v).trim()
     })
+
+    const activeFilters = filtersToUse.filter(isActiveParticipantFilter)
 
     const searchParams = {
       profileId: selectedConnection,
       page: newPage,
       page_size: newPageSize,
-      search: searchTerm.trim() !== "" ? searchTerm.trim() : undefined,
+      search: searchToUse.trim() !== "" ? searchToUse.trim() : undefined,
       ...(Object.keys(column_filters).length > 0 ? { column_filters } : {}),
+      ...(activeFilters.length > 0 ? { filters: activeFilters } : {}),
     };
 
     api.getParticipants(
@@ -270,14 +299,41 @@ export default function ParticipantPage() {
     );
   };
 
+  const addDynamicFilter = () => {
+    setDynamicFilters((prev) => [...prev, createEmptyParticipantFilter()]);
+  };
+
+  const removeDynamicFilter = (index: number) => {
+    setDynamicFilters((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const updateDynamicFilter = (
+    index: number,
+    key: keyof ParticipantDynamicFilter,
+    value: string
+  ) => {
+    setDynamicFilters((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [key]: value };
+      return next;
+    });
+  };
+
   const clearFilters = () => {
     skipColumnFilterRefetch.current = true;
     setSearchTerm("");
-    setTypeFilter("all");
+    setDynamicFilters([createEmptyParticipantFilter()]);
     setColumnFilters({});
     if (selectedConnection) {
-      // Re-run search after clearing filters, starting from page 1
-      setTimeout(() => handleSearch(1, preferredPageSize), 100);
+      setTimeout(
+        () =>
+          handleSearch(1, preferredPageSize, {
+            search: "",
+            filters: [],
+            columnFilters: {},
+          }),
+        100
+      );
     }
   };
 
@@ -702,12 +758,13 @@ export default function ParticipantPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="flex">
-        <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+      <div className="flex h-screen">
+        <div className="flex-shrink-0">
+          <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+        </div>
 
-        <div className="flex-1 max-w-full overflow-hidden">
-          {/* Header with Breadcrumb */}
-          <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
             <div className="flex items-center space-x-2 text-sm text-gray-500">
               <span>Jalin App</span>
               <span>/</span>
@@ -715,124 +772,125 @@ export default function ParticipantPage() {
             </div>
           </div>
 
-          <div className="p-6 max-w-full space-y-6">
-            <div className="bg-blue-50 rounded-3xl p-6 border border-blue-200">
-              <h1 className="text-2xl font-semibold text-gray-800 mb-2">
-                Participant Overview
-              </h1>
-              <p className="text-gray-600">
-                View and manage participant data for services.
-              </p>
+          <div className="flex-1 overflow-auto">
+            <div className="p-6 space-y-6">
+            <div className="bg-blue-50 rounded-2xl p-6 border border-blue-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-2xl font-semibold text-gray-800 mb-2">
+                    Participant
+                  </h1>
+                  <p className="text-gray-600">
+                    Filter participant, lalu kelola data dari hasil pencarian
+                  </p>
+                </div>
+                <Users className="h-8 w-8 text-blue-600" />
+              </div>
             </div>
 
-            <ParticipantFilters
-              connectionProfiles={connectionProfiles.filter(
-                (profile) => profile.connection_type === "DB"
-              )}
-              selectedConnection={selectedConnection}
-              onConnectionChange={setSelectedConnection}
-              searchTerm={searchTerm}
-              onSearchTermChange={setSearchTerm}
-              typeFilter={typeFilter}
-              onTypeFilterChange={setTypeFilter}
-              onSearch={() => handleSearch()}
-              onClearFilters={clearFilters}
-              isLoading={api.loading}
-              error={api.error}
-              onRetry={retryConnection}
-              onClearError={api.clearError}
-              searchResults={searchResults}
-              pageSize={paginationState.pageSize}
-              onPageSizeChange={changePageSize}
-              queryInfo={queryInfo}
-              showQuerySection={showQuerySection}
-              onToggleQuerySection={() =>
-                setShowQuerySection(!showQuerySection)
-              }
-            />
+            <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-6">
+              <ParticipantFilters
+                connectionProfiles={connectionProfiles.filter(
+                  (profile) => profile.connection_type === "DB"
+                )}
+                selectedConnection={selectedConnection}
+                onConnectionChange={setSelectedConnection}
+                searchTerm={searchTerm}
+                onSearchTermChange={setSearchTerm}
+                dynamicFilters={dynamicFilters}
+                onAddFilter={addDynamicFilter}
+                onRemoveFilter={removeDynamicFilter}
+                onUpdateFilter={updateDynamicFilter}
+                activeFilterCount={
+                  dynamicFilters.filter(isActiveParticipantFilter).length
+                }
+                onSearch={() => handleSearch()}
+                onClearFilters={clearFilters}
+                isLoading={api.loading}
+                error={api.error}
+                onRetry={retryConnection}
+                onClearError={api.clearError}
+                searchResults={searchResults}
+                pageSize={paginationState.pageSize}
+                onPageSizeChange={changePageSize}
+                queryInfo={queryInfo}
+                showQuerySection={showQuerySection}
+                onToggleQuerySection={() =>
+                  setShowQuerySection(!showQuerySection)
+                }
+              />
 
-            {searchResults && (
-              <Card className="shadow-sm border-0 bg-white rounded-3xl">
-                <CardHeader className="pb-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-lg">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                      <div className="flex items-center space-x-3">
-                        <div className="bg-green-100 rounded-lg p-2">
-                          <Users className="h-5 w-5 text-green-600" />
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-gray-800">
-                            Participant Results
-                          </h3>
-                          <div className="flex items-center space-x-3 mt-1">
-                            <span className="text-sm text-gray-600">
-                              {searchTerm.trim() ? (
-                                <>
-                                  {paginationState.totalRows.toLocaleString()}{" "}
-                                  results for "
-                                  <span className="font-semibold text-gray-800">
-                                    {searchTerm}
-                                  </span>
-                                  "
-                                </>
-                              ) : (
-                                <>
-                                  {paginationState.totalRows.toLocaleString()}{" "}
-                                  participants found
-                                </>
-                              )}
-                            </span>
-                            {searchResults.execution_time !== undefined && (
-                              <Badge
-                                variant="secondary"
-                                className="bg-green-100 text-green-700"
-                              >
-                                {searchResults.execution_time}ms
-                              </Badge>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      {selectedRows.size > 0 && (
-                        <Badge
-                          variant="secondary"
-                          className="bg-blue-100 text-blue-700"
-                        >
-                          {selectedRows.size} selected
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center space-x-3">
-                      {selectedConnection && (
-                        <Button
-                          size="sm"
-                          onClick={handleCreateParticipant}
-                          className="rounded-full bg-blue-600 hover:bg-blue-700 text-white"
-                        >
-                          <Plus className="h-4 w-4 mr-1" />
-                          Add Participant
-                        </Button>
-                      )}
-                      <Select onValueChange={exportData}>
-                        <SelectTrigger className="w-28 h-9 rounded-full">
-                          <SelectValue placeholder="Export" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="csv">CSV</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-gray-700">
+                    <Database className="h-4 w-4 text-gray-500" />
+                    Hasil participant
+                    <Badge variant="secondary" className="font-normal">
+                      {paginationState.totalRows} total
+                    </Badge>
+                    {selectedRows.size > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-blue-100 text-blue-700 font-normal"
+                      >
+                        {selectedRows.size} selected
+                      </Badge>
+                    )}
+                    {searchResults?.execution_time !== undefined && (
+                      <Badge
+                        variant="secondary"
+                        className="bg-blue-100 text-blue-700 font-normal"
+                      >
+                        {searchResults.execution_time}ms
+                      </Badge>
+                    )}
                   </div>
-                </CardHeader>
-                <CardContent className="p-6">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                    {selectedConnection && (
+                      <Button
+                        size="sm"
+                        onClick={handleCreateParticipant}
+                        className="h-8"
+                      >
+                        <Plus className="h-3.5 w-3.5 mr-1" />
+                        Add Participant
+                      </Button>
+                    )}
+                    <Select onValueChange={exportData}>
+                      <SelectTrigger className="h-8 w-[100px]">
+                        <SelectValue placeholder="Export" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="csv">CSV</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <span>Per halaman</span>
+                    <Select
+                      value={String(paginationState.pageSize)}
+                      onValueChange={(v) => changePageSize(Number(v))}
+                    >
+                      <SelectTrigger className="h-8 w-[84px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[10, 20, 50, 100].map((n) => (
+                          <SelectItem key={n} value={String(n)}>
+                            {n}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {!selectedConnection && !api.error ? (
+                  <div className="p-10 text-center text-gray-500 text-sm">
+                    Pilih profile, atur filter bila perlu, lalu klik &quot;Cari
+                    Participant&quot;.
+                  </div>
+                ) : searchResults ? (
                   <ParticipantTable
-                    participants={
-                      typeFilter !== "all"
-                        ? participants.filter(
-                            (p) => p.participant_type === typeFilter
-                          )
-                        : participants
-                    }
+                    participants={participants}
                     selectedRows={selectedRows}
                     onRowSelect={handleRowSelect}
                     onRowSelectAll={handleRowSelectAll}
@@ -865,42 +923,14 @@ export default function ParticipantPage() {
                     onDeleteParticipant={handleDeleteParticipant}
                     onCreateParticipant={handleCreateParticipant}
                   />
-                </CardContent>
-              </Card>
-            )}
-
-            {!selectedConnection && !api.error && (
-              <Card className="shadow-sm border-0 rounded-2xl">
-                <CardContent className="p-12 text-center">
-                  <div className="max-w-md mx-auto">
-                    <div className="bg-blue-50 rounded-full p-6 w-24 h-24 mx-auto mb-6 flex items-center justify-center">
-                      <Database className="h-12 w-12 text-blue-600" />
-                    </div>
-                    <h3 className="text-xl font-semibold text-gray-800 mb-3">
-                      Select a Database Connection
-                    </h3>
-                    <p className="text-gray-600 mb-6">
-                      Choose a database connection profile above to start
-                      viewing participant data.
-                    </p>
-                    <div className="flex items-center space-x-2 text-sm text-gray-500">
-                      <Badge variant="outline">
-                        <Activity className="h-3 w-3 mr-1" />
-                        Real-time data
-                      </Badge>
-                      <Badge variant="outline">
-                        <Search className="h-3 w-3 mr-1" />
-                        Searchable
-                      </Badge>
-                      <Badge variant="outline">
-                        <Database className="h-3 w-3 mr-1" />
-                        Export options
-                      </Badge>
-                    </div>
+                ) : (
+                  <div className="p-10 text-center text-gray-500 text-sm">
+                    Pilih profile, atur filter bila perlu, lalu klik &quot;Cari
+                    Participant&quot;.
                   </div>
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </div>
+            </div>
 
             {contextMenu.visible && (
               <div
@@ -990,6 +1020,7 @@ export default function ParticipantPage() {
                 onClick={() => setContextMenu({ visible: false, x: 0, y: 0 })}
               />
             )}
+            </div>
           </div>
         </div>
       </div>

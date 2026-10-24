@@ -1,9 +1,11 @@
 import type { User } from "./types"
+import { getApiBaseUrl } from "@/lib/api-base"
 
 // Define the AuthUser interface based on the new API response
 export interface AuthUser extends User {
   id: number
   username: string
+  full_name?: string | null
   role_name: string // Corresponds to the new API structure
   id_role: number // Corresponds to the new API structure
   can_crud: boolean // NEW: CRUD permission
@@ -62,6 +64,9 @@ export interface AccessiblePage {
   id_page: number
   name: string
   path: string
+  page_order?: number
+  icon?: string | null
+  parent_id?: number | null
 }
 
 export interface UserPagesResponse {
@@ -118,12 +123,6 @@ class TokenManager {
 export const tokenManager = new TokenManager()
 
 class AuthApi {
-  private baseUrl: string
-
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl
-  }
-
   private async request<T>(
     endpoint: string,
     options?: RequestInit,
@@ -140,7 +139,7 @@ class AuthApi {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
         ...options,
         headers: {
           ...headers,
@@ -235,4 +234,4 @@ class AuthApi {
   }
 }
 
-export const authApi = new AuthApi(process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000")
+export const authApi = new AuthApi()

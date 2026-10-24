@@ -241,6 +241,12 @@ export interface ParticipantSearchResponse {
   executed_sql?: string
 }
 
+export interface ParticipantDynamicFilter {
+  field: string
+  operator: string
+  value: string
+}
+
 export interface ParticipantSearchParams {
   profileId: string
   page: number
@@ -248,11 +254,50 @@ export interface ParticipantSearchParams {
   search?: string
   /** Applied server-side with pagination (AND with global search when both set). */
   column_filters?: Record<string, string>
+  /** Dynamic field/operator/value filters (AND). */
+  filters?: ParticipantDynamicFilter[]
 }
 
 export interface ContainerPluginSearchParams {
   profileId: string
   name: string
+}
+
+export interface ContainerPluginDynamicFilter {
+  field: string
+  operator: string
+  value: string
+}
+
+export interface ContainerPluginListSearchParams {
+  profileId: string
+  page?: number
+  page_size?: number
+  search?: string
+  filters?: ContainerPluginDynamicFilter[]
+}
+
+export interface ContainerPluginListSearchResult {
+  success: boolean
+  data: ContainerPlugin[]
+  total_rows: number
+  page: number
+  page_size: number
+  execution_time?: number
+  filterFields?: Array<{ label: string; value: string; table?: string }>
+  filterOperators?: Array<{ label: string; value: string }>
+  error?: string | null
+}
+
+export interface ContainerPluginDetailResult {
+  success: boolean
+  data: {
+    plugin: ContainerPlugin
+    attrs: ContainerPluginAttr[]
+    filtered_attrs: ContainerPluginAttr[]
+  }
+  execution_time?: number
+  error?: string | null
 }
 
 interface DuplicateFormData {

@@ -376,17 +376,32 @@ export function RouteTable({
     };
   }, []);
 
+  const getMatchStatusSearchText = (route: any) => {
+    const status = Number(route?.match_status ?? 0);
+    const reason = String(route?.status_reason ?? "");
+    const labels: Record<number, string> = {
+      0: "0: no match",
+      1: "1: rule + gateway match",
+      2: "2: rule match + BIN-valid gateway",
+      3: "3: rule match but gateway mismatch",
+    };
+    return `${status} ${labels[status] || ""} ${reason}`.toLowerCase();
+  };
+
   const getFilteredRoutes = () => {
     let filtered = [...routes];
     Object.entries(columnFilters).forEach(([columnKey, filterValue]) => {
-      if (filterValue?.trim()) {
-        filtered = filtered.filter((route: any) => {
-          const cellValue = String(
-            route[columnKey as keyof BinRoutingRoute] ?? ""
-          ).toLowerCase();
-          return cellValue.includes(filterValue.toLowerCase());
-        });
-      }
+      const needle = filterValue?.trim().toLowerCase();
+      if (!needle) return;
+      filtered = filtered.filter((route: any) => {
+        if (columnKey === "match_status") {
+          return getMatchStatusSearchText(route).includes(needle);
+        }
+        const cellValue = String(
+          route[columnKey as keyof BinRoutingRoute] ?? ""
+        ).toLowerCase();
+        return cellValue.includes(needle);
+      });
     });
     return filtered;
   };
@@ -764,11 +779,25 @@ export function RouteTable({
             </thead>
 
             <tbody className="bg-white divide-y divide-gray-200">
-              {routes.map((route, rowIndex) => {
-                const isSelected = selectedRows.has(rowIndex);
+              {sortedAndFilteredRoutes.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={visibleColumns.length + 2}
+                    className="px-4 py-10 text-center text-sm text-gray-500"
+                  >
+                    {routes.length === 0
+                      ? "Belum ada data routing."
+                      : "Tidak ada baris yang cocok dengan filter kolom."}
+                  </td>
+                </tr>
+              )}
+              {sortedAndFilteredRoutes.map((route, displayIndex) => {
+                const rowIndex = routes.findIndex((r) => r.id === route.id);
+                const selectionIndex = rowIndex >= 0 ? rowIndex : displayIndex;
+                const isSelected = selectedRows.has(selectionIndex);
                 return (
                   <tr
-                    key={rowIndex}
+                    key={route.id ?? displayIndex}
                     className={(() => {
                       const s = Number((route as any).match_status ?? 0);
                       const base =
@@ -787,7 +816,7 @@ export function RouteTable({
                       e.preventDefault();
                       // Select row on right-click if not already selected
                       if (!isSelected) {
-                        onRowSelect(rowIndex);
+                        onRowSelect(selectionIndex);
                       }
                       let cell: { key: string; value: string } | undefined;
                       const td = (e.target as HTMLElement)?.closest("td");
@@ -797,7 +826,7 @@ export function RouteTable({
                         const value = String((route as any)[keyAttr] ?? "");
                         cell = { key: keyAttr, value };
                       }
-                      onRightClick?.(e, rowIndex, cell);
+                      onRightClick?.(e, selectionIndex, cell);
                     }}
                   >
                     <td
@@ -806,7 +835,7 @@ export function RouteTable({
                     >
                       <Checkbox
                         checked={isSelected}
-                        onCheckedChange={() => onRowSelect(rowIndex)}
+                        onCheckedChange={() => onRowSelect(selectionIndex)}
                         onClick={(e) => e.stopPropagation()}
                       />
                     </td>
@@ -816,10 +845,10 @@ export function RouteTable({
                     >
                       <span className="text-xs text-gray-800">
                         {hidePagination
-                          ? rowIndex + 1
+                          ? displayIndex + 1
                           : (paginationState.currentPage - 1) *
                               paginationState.pageSize +
-                            rowIndex +
+                            displayIndex +
                             1}
                       </span>
                     </td>

@@ -55,6 +55,8 @@ interface SaveScriptDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   content: string
+  /** Dialog opened for save or load — affects title only */
+  intent?: "save" | "load"
   suggestedName?: string
   suggestedGroup?: string
   onLoadedContent?: (content: string, meta: { id: number; group_name: string; name: string }) => void
@@ -68,6 +70,7 @@ export function SaveScriptDialog({
   open,
   onOpenChange,
   content,
+  intent = "save",
   suggestedName = "",
   suggestedGroup = "",
   onLoadedContent,
@@ -437,9 +440,13 @@ export function SaveScriptDialog({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Database className="h-5 w-5 text-blue-600" />
-              Save script to database
+              {intent === "load" ? "Load script from database" : "Save script to database"}
             </DialogTitle>
-            <DialogDescription>Save current editor content to a database script</DialogDescription>
+            <DialogDescription>
+              {intent === "load"
+                ? "Load a database script into the editor"
+                : "Save current editor content to a database script"}
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 min-w-0 overflow-hidden">

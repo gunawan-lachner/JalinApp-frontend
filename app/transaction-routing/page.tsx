@@ -17,8 +17,11 @@ import {
   Eye,
   Edit2,
   Trash2,
+  Route,
+  Filter,
+  RefreshCw,
+  Loader2,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -62,7 +65,6 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { RouteTable } from "@/components/rna/route-table";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RoutingSimulationPanel } from "@/components/rna/routing-simulation-panel";
 import { useCrudPermissions } from "@/hooks/useCrudPermissions";
 import { RouteDetailsModal } from "@/components/rna/route-details-modal";
@@ -107,9 +109,9 @@ function SearchSelect({
   value,
   onChange,
   placeholder,
-  triggerClassName = "rounded-2xl border border-gray-300 w-full justify-between",
+  triggerClassName = "w-full justify-between font-normal",
   format = "name",
-  contentClassName = "p-0 w-[--radix-popover-trigger-width] rounded-xl",
+  contentClassName = "p-0 w-[--radix-popover-trigger-width]",
 }: {
   items: { id: number; name: string }[];
   value: string;
@@ -956,7 +958,9 @@ export default function TransactionRoutingPage() {
 
   const [acquirers, setAcquirers] = useState<SimpleIdName[]>([]);
   const [gatewaysMeta, setGatewaysMeta] = useState<SimpleIdName[]>([]);
-  const [issuers, setIssuers] = useState<SimpleIdName[]>([]);
+  const [issuers, setIssuers] = useState<
+    Array<SimpleIdName & { container_plugin_name?: string }>
+  >([]);
 
   const [gatewayModalRoute, setGatewayModalRoute] =
     useState<BinRoutingRoute | null>(null);
@@ -1064,26 +1068,29 @@ export default function TransactionRoutingPage() {
       {
         profileId: selectedConnection,
         page: 1,
-        page_size: 200,
-        search_term: "",
+        page_size: 2000,
+        search: "",
       },
       (data: any) => {
         const items =
-          (data?.results || []).map((p: any) => ({
-            id: Number(
+          (data?.results || []).map((p: any) => {
+            const id = Number(
               p?.id ??
                 p?.participant_id ??
                 p?.participantId ??
                 p?.issuer_id ??
                 p?.issuerId
-            ),
-            name: `${p?.id ?? p?.participant_id ?? p?.issuer_id ?? ""} - ${
-              p?.name ?? p?.participant_name ?? p?.issuer_name ?? "Unknown"
-            }${
-              p?.container_plugin_name ? ` (${p.container_plugin_name})` : ""
-            }`,
-          })) || [];
-        setIssuers(items as SimpleIdName[]);
+            );
+            const plugin = String(p?.container_plugin_name ?? "").trim();
+            const baseName =
+              p?.name ?? p?.participant_name ?? p?.issuer_name ?? "Unknown";
+            return {
+              id,
+              name: plugin ? `${baseName} (${plugin})` : String(baseName),
+              container_plugin_name: plugin || undefined,
+            };
+          }) || [];
+        setIssuers(items);
       },
       (err) => console.error("Issuers error", err)
     );
@@ -1680,50 +1687,49 @@ export default function TransactionRoutingPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="flex">
-        <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+      <div className="flex h-screen">
+        <div className="flex-shrink-0">
+          <Sidebar activeSection={activeSection} onNavigate={handleNavigation} />
+        </div>
 
-        <div className="flex-1 max-w-full overflow-hidden">
-          <div className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
             <div className="flex items-center space-x-2 text-sm text-gray-500">
               <span>Jalin App</span>
               <span>/</span>
               <span className="text-gray-800 font-medium">
-                Transaction Routing
+                Routing &amp; Simulator
               </span>
             </div>
           </div>
 
-          <div className="p-6 max-w-full">
-            <div className="bg-blue-50 rounded-3xl p-6 border border-blue-200 mb-6">
-              <h1 className="text-2xl font-semibold text-gray-800 mb-2">
-                Transaction Routing by BIN
-              </h1>
-              <p className="text-gray-600">
-                Manage and configure transaction routing rules based on BIN
-                ranges and participant settings.
-              </p>
-            </div>
-
-            {/* Connection & View Mode Cards - Side by Side */}
-            <div className="flex gap-6 mb-6">
-              {/* Connection Card */}
-              <Card className="flex-1 shadow-sm border-0 bg-white rounded-3xl">
-                <CardContent className="p-6">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center space-x-2">
-                    <Database className="h-6 w-6 text-blue-600" />
-                    <span>Connection</span>
-                  </h2>
+          <div className="flex-1 overflow-auto">
+            <div className="p-6 space-y-6">
+              <div className="bg-blue-50 rounded-2xl p-6 border border-blue-200">
+                <div className="flex items-center justify-between">
                   <div>
-                    <Label className="text-sm font-medium text-gray-700 mb-2 block">
-                      Select Connection
-                    </Label>
+                    <h1 className="text-2xl font-semibold text-gray-800 mb-2">
+                      Routing &amp; Simulator
+                    </h1>
+                    <p className="text-gray-600">
+                      Filter &amp; kelola aturan routing BIN, atau jalankan
+                      simulasi — klik baris untuk detail
+                    </p>
+                  </div>
+                  <Route className="h-8 w-8 text-blue-600" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                  <div className="space-y-2">
+                    <Label>Connection Profile</Label>
                     <Select
                       value={selectedConnection}
                       onValueChange={setSelectedConnection}
                     >
-                      <SelectTrigger className="w-full rounded-2xl">
-                        <SelectValue placeholder="Select connection" />
+                      <SelectTrigger>
+                        <SelectValue placeholder="Pilih connection" />
                       </SelectTrigger>
                       <SelectContent>
                         {connectionProfiles.map((profile, idx) => (
@@ -1737,28 +1743,17 @@ export default function TransactionRoutingPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                </CardContent>
-              </Card>
 
-              {/* View Mode Toggle Card */}
-              <Card className="w-68 shadow-sm border-0 bg-white rounded-3xl flex-shrink-0">
-                <CardContent className="p-6">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center space-x-2">
-                    <Database className="h-6 w-6 text-blue-600" />
-                    <span>View Mode</span>
-                  </h2>
-                  <div>
-                    <Label className="text-sm font-medium text-gray-700 mb-2 block">
-                      Select View
-                    </Label>
-                    <div className="inline-flex rounded-full border border-gray-200 bg-white p-1 shadow-sm w-full justify-center">
+                  <div className="space-y-2">
+                    <Label>Mode</Label>
+                    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1 w-full">
                       <button
                         type="button"
                         onClick={() => setActiveTab("routing")}
-                        className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
+                        className={`flex-1 px-3 py-2 text-sm rounded-md transition ${
                           activeTab === "routing"
-                            ? "bg-blue-600 text-white"
-                            : "text-gray-700 hover:bg-gray-50"
+                            ? "bg-white text-gray-900 shadow-sm font-medium"
+                            : "text-gray-600 hover:text-gray-800"
                         }`}
                         aria-pressed={activeTab === "routing"}
                       >
@@ -1767,10 +1762,10 @@ export default function TransactionRoutingPage() {
                       <button
                         type="button"
                         onClick={() => setActiveTab("simulation")}
-                        className={`px-4 py-1.5 text-sm rounded-full transition min-w-[110px] ${
+                        className={`flex-1 px-3 py-2 text-sm rounded-md transition ${
                           activeTab === "simulation"
-                            ? "bg-blue-600 text-white"
-                            : "text-gray-700 hover:bg-gray-50"
+                            ? "bg-white text-gray-900 shadow-sm font-medium"
+                            : "text-gray-600 hover:text-gray-800"
                         }`}
                         aria-pressed={activeTab === "simulation"}
                       >
@@ -1778,79 +1773,109 @@ export default function TransactionRoutingPage() {
                       </button>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
 
-            {activeTab === "routing" ? (
-              <Card className="shadow-sm border-0 bg-white rounded-3xl mb-6">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg font-semibold flex items-center gap-2">
-                    <Search className="h-5 w-5 text-blue-600" />
-                    Filters
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-6">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                    {/* Acquirer ID Filter */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">
-                        Acquirer ID
-                      </label>
-                      <div className="relative">
+                  <div className="flex flex-wrap gap-2 md:justify-end">
+                    {activeTab === "routing" ? (
+                      <>
+                        <Button
+                          onClick={() => {
+                            setHasSearched(true);
+                            setCurrentPage(1);
+                            handleSearch({ page: 1, pageSize });
+                          }}
+                          disabled={!selectedConnection || isLoading}
+                          className="flex-1 md:flex-none disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isLoading ? (
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4 mr-2" />
+                          )}
+                          Cari Routing
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleClear}
+                        >
+                          <X className="h-4 w-4 mr-1.5" />
+                          Reset
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={handleAddNew}
+                          disabled={!selectedConnection}
+                        >
+                          <Plus className="h-4 w-4 mr-1.5" />
+                          Add New
+                        </Button>
+                      </>
+                    ) : (
+                      <Badge variant="secondary" className="font-normal h-9 px-3">
+                        <Database className="h-3.5 w-3.5 mr-1.5" />
+                        {routes.length} routes
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+
+                {activeTab === "routing" ? (
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-gray-800 flex items-center gap-1.5">
+                          <Filter className="h-4 w-4 text-gray-500" />
+                          Filter routing
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Acquirer, gateway, issuer, BIN, atau pencarian teks
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-gray-600">
+                          Acquirer ID
+                        </Label>
                         <SearchSelect
                           items={acquirers}
                           value={acquirerFilter}
                           onChange={setAcquirerFilter}
-                          placeholder="Select acquirer"
-                          triggerClassName="rounded-2xl border border-gray-300 w-full justify-between"
+                          placeholder="Pilih acquirer"
                           format="id-name"
                         />
                       </div>
-                    </div>
-
-                    {/* Gateway Filter */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">
-                        Gateway
-                      </label>
-                      <div className="relative">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-gray-600">Gateway</Label>
                         <SearchSelect
                           items={gatewaysMeta}
                           value={gatewayFilter}
                           onChange={setGatewayFilter}
-                          placeholder="Select gateway"
-                          triggerClassName="rounded-2xl border border-gray-300 w-full justify-between"
+                          placeholder="Pilih gateway"
                           format="id-name"
                         />
                       </div>
-                    </div>
-
-                    {/* Issuer/Participant Filter */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">
-                        Issuer/Participant
-                      </label>
-                      <div className="relative">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-gray-600">
+                          Issuer/Participant
+                        </Label>
                         <SearchSelect
                           items={issuers}
                           value={issuerFilter}
                           onChange={setIssuerFilter}
-                          placeholder="Select issuer"
-                          triggerClassName="rounded-2xl border border-gray-300 w-full justify-between text-left"
+                          placeholder="Pilih issuer"
                           format="name"
                         />
                       </div>
                     </div>
-                  </div>
 
-                  {/* Search Section */}
-                  <div className="flex space-x-4 items-end">
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-gray-700">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-gray-600">
                           BIN Number
-                        </label>
+                        </Label>
                         <Input
                           value={binNumber}
                           onChange={(e) =>
@@ -1869,229 +1894,214 @@ export default function TransactionRoutingPage() {
                               )
                             )
                           }
+                          onKeyDown={(e) => {
+                            if (
+                              e.key === "Enter" &&
+                              selectedConnection &&
+                              !isLoading
+                            ) {
+                              setHasSearched(true);
+                              setCurrentPage(1);
+                              handleSearch({ page: 1, pageSize });
+                            }
+                          }}
                           inputMode="numeric"
                           pattern="[0-9]*"
                           placeholder="e.g., 4105040000000000000"
-                          className="rounded-xl"
+                          className="font-mono text-sm"
+                          disabled={!selectedConnection}
                         />
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-gray-700">
-                          Others:
-                        </label>
-                        <Input
-                          placeholder="Search Any Text..."
-                          value={othersSearch}
-                          onChange={(e) => setOthersSearch(e.target.value)}
-                          className="rounded-2xl border border-gray-300"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-end space-x-2">
-                      <Button
-                        onClick={() => {
-                          setHasSearched(true);
-                          setCurrentPage(1);
-                          handleSearch({ page: 1, pageSize });
-                        }}
-                        className="rounded-2xl bg-blue-600 hover:bg-blue-700"
-                      >
-                        <Search className="h-4 w-4 mr-2" />
-                        Search
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex items-center justify-end mt-4">
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="outline"
-                        onClick={handleClear}
-                        className="rounded-2xl bg-transparent"
-                      >
-                        <X className="h-4 w-4 mr-2" />
-                        Clear
-                      </Button>
-                      <Button
-                        onClick={handleAddNew}
-                        className="rounded-2xl bg-green-600 hover:bg-green-700"
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add New
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="mb-6">
-                <RoutingSimulationPanel
-                  selectedConnection={selectedConnection}
-                  acquirers={acquirers}
-                  routes={routes}
-                  onApplyResults={(simRoutes, sql, execSec) => {
-                    setRoutes(simRoutes);
-                    setTotalRows(simRoutes.length);
-                    setExecutedSql(sql);
-                    if (typeof execSec === "number" && !Number.isNaN(execSec)) {
-                      setExecutionTime(execSec);
-                    }
-                  }}
-                />
-              </div>
-            )}
-
-            <div className="mb-6 flex justify-center">
-              <Button
-                onClick={() => setIsSmallQueryExpanded(!isSmallQueryExpanded)}
-                variant="outline"
-                size="sm"
-                className="h-7 px-2 rounded-full bg-white border-gray-300 hover:bg-gray-50 shadow-sm transition-all duration-200 text-xs"
-              >
-                <Code className="h-3 w-3 mr-1 text-gray-600" />
-                <span className="text-gray-700 font-medium">SQL</span>
-                {typeof executionTime === "number" &&
-                  !Number.isNaN(executionTime) && (
-                    <Badge
-                      variant="secondary"
-                      className="ml-1 bg-green-100 text-green-700 text-xs px-1 py-0 h-3 text-[10px]"
-                    >
-                      {executionTime.toFixed(2)}s
-                    </Badge>
-                  )}
-                <ChevronDownIcon
-                  className={`h-3 w-3 ml-1 text-gray-500 transition-transform duration-200 ${
-                    isSmallQueryExpanded ? "rotate-180" : ""
-                  }`}
-                />
-              </Button>
-            </div>
-
-            {isSmallQueryExpanded && (
-              <Card className="shadow-sm border-0 bg-white rounded-3xl mb-6 animate-in slide-in-from-top-2 duration-200">
-                <CardContent className="p-6 space-y-4">
-                  {/* Query Statistics */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                      {typeof executionTime === "number" &&
-                        !Number.isNaN(executionTime) && (
-                          <div className="flex items-center space-x-1">
-                            <Clock className="h-3 w-3 text-green-600" />
-                            <span className="text-xs text-gray-600">
-                              <span className="font-medium text-green-700">
-                                {executionTime.toFixed(3)}s
-                              </span>
-                            </span>
-                          </div>
-                        )}
-                      <div className="flex items-center space-x-1">
-                        <Database className="h-3.5 w-3.5 text-blue-600" />
-                        <span className="text-xs text-gray-600">
-                          <span className="font-medium text-blue-700">
-                            {(totalRows || 0).toLocaleString()}
-                          </span>{" "}
-                          rows
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleCopyExecutedSql}
-                        className="h-7 px-2 rounded-lg text-xs bg-white/70"
-                      >
-                        <Copy className="h-3 w-3 mr-1" />
-                        Copy
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleSaveExecutedSql}
-                        className="h-7 px-2 rounded-lg text-xs bg-white/70"
-                      >
-                        <Download className="h-3 w-3 mr-1" />
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* SQL Query Display */}
-                  <div className="bg-slate-900 rounded-lg p-4 overflow-x-auto">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center space-x-2">
-                        <div className="bg-slate-700 rounded-md p-1">
-                          <Code className="h-3 w-3 text-slate-300" />
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-gray-600">
+                          Pencarian cepat
+                        </Label>
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                          <Input
+                            placeholder="Cari teks apa saja..."
+                            value={othersSearch}
+                            onChange={(e) => setOthersSearch(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (
+                                e.key === "Enter" &&
+                                selectedConnection &&
+                                !isLoading
+                              ) {
+                                setHasSearched(true);
+                                setCurrentPage(1);
+                                handleSearch({ page: 1, pageSize });
+                              }
+                            }}
+                            className="pl-9 font-mono text-sm"
+                            disabled={!selectedConnection}
+                          />
                         </div>
-                        <span className="text-xs font-medium text-slate-300">
-                          Executed SQL Query
-                        </span>
                       </div>
-                      <div className="flex items-center space-x-1">
-                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                        <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                      </div>
-                    </div>
-
-                    <pre className="text-sm text-slate-100 whitespace-pre-wrap font-mono leading-relaxed">
-                      {executedSql ? executedSql : "No query available"}
-                    </pre>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* show shimmer skeleton while loading instead of the table */}
-            <Card className="shadow-sm border-0 bg-white rounded-3xl">
-              <CardContent className="p-6">
-                {isLoading ? (
-                  <div className="space-y-3">
-                    <div className="h-10 w-1/3 rounded-lg bg-muted animate-pulse" />
-                    <div className="grid grid-cols-12 gap-2">
-                      <div className="col-span-12 h-10 rounded-md bg-muted animate-pulse" />
-                      {[...Array(8)].map((_, i) => (
-                        <div
-                          key={i}
-                          className="col-span-12 h-12 rounded-md bg-muted animate-pulse"
-                        />
-                      ))}
                     </div>
                   </div>
                 ) : (
-                  <RouteTable
+                  <RoutingSimulationPanel
+                    selectedConnection={selectedConnection}
+                    acquirers={acquirers}
                     routes={routes}
-                    selectedRows={selectedRows}
-                    onRowSelect={handleRouteRowSelect}
-                    onRowSelectAll={handleRouteRowSelectAll}
-                    onRightClick={handleRightClick}
-                    sortConfig={sortConfig}
-                    onSort={handleRouteSort}
-                    columnFilters={columnFilters}
-                    onColumnFilter={handleRouteColumnFilter}
-                    hiddenColumns={hiddenColumns}
-                    onColumnVisibilityChange={(columnKey) => {
-                      const next = new Set(hiddenColumns);
-                      next.has(columnKey)
-                        ? next.delete(columnKey)
-                        : next.add(columnKey);
-                      setHiddenColumns(next);
+                    onApplyResults={(simRoutes, sql, execSec) => {
+                      setRoutes(simRoutes);
+                      setTotalRows(simRoutes.length);
+                      setExecutedSql(sql);
+                      if (
+                        typeof execSec === "number" &&
+                        !Number.isNaN(execSec)
+                      ) {
+                        setExecutionTime(execSec);
+                      }
                     }}
-                    paginationState={paginationState}
-                    onPageChange={handleRoutePageChange}
-                    onPageSizeChange={handleRoutePageSizeChange}
-                    isPaginationLoading={isPaginationLoading}
-                    onRowDoubleClick={(route) => setDetailsRoute(route)}
-                    onDelete={confirmDelete}
-                    hidePagination={activeTab === "simulation"}
                   />
                 )}
-              </CardContent>
-            </Card>
 
-            {/* remove the old pagination section below the table (now handled inside RouteTable) */}
+                <div className="flex justify-center">
+                  <Button
+                    onClick={() =>
+                      setIsSmallQueryExpanded(!isSmallQueryExpanded)
+                    }
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-xs"
+                  >
+                    <Code className="h-3.5 w-3.5 mr-1.5 text-gray-600" />
+                    <span className="text-gray-700 font-medium">SQL</span>
+                    {typeof executionTime === "number" &&
+                      !Number.isNaN(executionTime) && (
+                        <Badge
+                          variant="secondary"
+                          className="ml-1.5 font-normal"
+                        >
+                          {executionTime.toFixed(2)}s
+                        </Badge>
+                      )}
+                    <ChevronDownIcon
+                      className={`h-3.5 w-3.5 ml-1.5 text-gray-500 transition-transform duration-200 ${
+                        isSmallQueryExpanded ? "rotate-180" : ""
+                      }`}
+                    />
+                  </Button>
+                </div>
+
+                {isSmallQueryExpanded && (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-4 animate-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                        {typeof executionTime === "number" &&
+                          !Number.isNaN(executionTime) && (
+                            <div className="flex items-center space-x-1">
+                              <Clock className="h-3 w-3 text-green-600" />
+                              <span className="text-xs text-gray-600">
+                                <span className="font-medium text-green-700">
+                                  {executionTime.toFixed(3)}s
+                                </span>
+                              </span>
+                            </div>
+                          )}
+                        <div className="flex items-center space-x-1">
+                          <Database className="h-3.5 w-3.5 text-blue-600" />
+                          <span className="text-xs text-gray-600">
+                            <span className="font-medium text-blue-700">
+                              {(totalRows || 0).toLocaleString()}
+                            </span>{" "}
+                            rows
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleCopyExecutedSql}
+                          className="h-8"
+                        >
+                          <Copy className="h-3.5 w-3.5 mr-1" />
+                          Copy
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleSaveExecutedSql}
+                          className="h-8"
+                        >
+                          <Download className="h-3.5 w-3.5 mr-1" />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-900 rounded-lg p-4 overflow-x-auto">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center space-x-2">
+                          <div className="bg-slate-700 rounded-md p-1">
+                            <Code className="h-3 w-3 text-slate-300" />
+                          </div>
+                          <span className="text-xs font-medium text-slate-300">
+                            Executed SQL Query
+                          </span>
+                        </div>
+                      </div>
+                      <pre className="text-sm text-slate-100 whitespace-pre-wrap font-mono leading-relaxed">
+                        {executedSql ? executedSql : "No query available"}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+
+                <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                      <Database className="h-4 w-4 text-gray-500" />
+                      {activeTab === "routing"
+                        ? "Hasil routing"
+                        : "Hasil simulasi"}
+                      <Badge variant="secondary" className="font-normal">
+                        {totalRows || routes.length} total
+                      </Badge>
+                    </div>
+                  </div>
+
+                  <div className="p-4">
+                    {isLoading ? (
+                      <div className="p-10 text-center text-gray-500">
+                        <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+                        Mencari data...
+                      </div>
+                    ) : (
+                      <RouteTable
+                        routes={routes}
+                        selectedRows={selectedRows}
+                        onRowSelect={handleRouteRowSelect}
+                        onRowSelectAll={handleRouteRowSelectAll}
+                        onRightClick={handleRightClick}
+                        sortConfig={sortConfig}
+                        onSort={handleRouteSort}
+                        columnFilters={columnFilters}
+                        onColumnFilter={handleRouteColumnFilter}
+                        hiddenColumns={hiddenColumns}
+                        onColumnVisibilityChange={(columnKey) => {
+                          const next = new Set(hiddenColumns);
+                          next.has(columnKey)
+                            ? next.delete(columnKey)
+                            : next.add(columnKey);
+                          setHiddenColumns(next);
+                        }}
+                        paginationState={paginationState}
+                        onPageChange={handleRoutePageChange}
+                        onPageSizeChange={handleRoutePageSizeChange}
+                        isPaginationLoading={isPaginationLoading}
+                        onRowDoubleClick={(route) => setDetailsRoute(route)}
+                        onDelete={confirmDelete}
+                        hidePagination={activeTab === "simulation"}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
 
             {/* CHANGE: replace inline, parent-controlled form with the local-state CreateEditRouteModalContent */}
             <Dialog
@@ -2131,6 +2141,19 @@ export default function TransactionRoutingPage() {
                 isOpen={!!detailsRoute}
                 onClose={() => setDetailsRoute(null)}
                 route={detailsRoute}
+                connection={selectedConnection}
+                canEdit={canCrud}
+                acquirers={acquirers}
+                issuers={issuers}
+                gateways={gatewaysMeta}
+                onUpdated={(updated) => {
+                  setDetailsRoute(updated);
+                  setRoutes((prev) =>
+                    prev.map((r) =>
+                      r.id === updated.id ? { ...r, ...updated } : r
+                    )
+                  );
+                }}
               />
             )}
 
@@ -2286,6 +2309,7 @@ export default function TransactionRoutingPage() {
                 }
               />
             )}
+            </div>
           </div>
         </div>
       </div>

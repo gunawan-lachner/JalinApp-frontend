@@ -7,6 +7,7 @@ export type EditorLanguageId =
   | "sql"
   | "markdown"
   | "xml"
+  | "xslt"
   | "yaml"
   | "python"
   | "shell"
@@ -30,12 +31,15 @@ const EXT_TO_LANGUAGE: Record<string, EditorLanguageId> = {
   ".md": "markdown",
   ".markdown": "markdown",
   ".xml": "xml",
+  ".xsl": "xslt",
+  ".xslt": "xslt",
   ".yml": "yaml",
   ".yaml": "yaml",
   ".py": "python",
   ".sh": "shell",
   ".bash": "shell",
-  ".renjs": "renjs",
+  // Script RenJS di project ini umumnya JavaScript
+  ".renjs": "javascript",
   ".txt": "plaintext",
   ".log": "plaintext",
   ".conf": "plaintext",
@@ -52,6 +56,7 @@ const LANGUAGE_LABELS: Record<EditorLanguageId, string> = {
   sql: "SQL",
   markdown: "Markdown",
   xml: "XML",
+  xslt: "XSLT",
   yaml: "YAML",
   python: "Python",
   shell: "Shell",
@@ -74,7 +79,7 @@ export function languageLabel(lang: EditorLanguageId): string {
   return LANGUAGE_LABELS[lang] || lang
 }
 
-/** Monaco built-in id; renjs is registered as custom language. */
+/** Monaco built-in id; renjs/xslt are registered as custom languages. */
 export function toMonacoLanguage(lang: EditorLanguageId): string {
   return lang
 }

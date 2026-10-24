@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -22,9 +21,9 @@ function SearchSelect({
   value,
   onChange,
   placeholder,
-  triggerClassName = "rounded-2xl border border-gray-300 w-full justify-between",
+  triggerClassName = "w-full justify-between font-normal",
   format = "name",
-  contentClassName = "p-0 w-[--radix-popover-trigger-width] rounded-xl",
+  contentClassName = "p-0 w-[--radix-popover-trigger-width]",
 }: {
   items: { id: number; name: string }[]
   value: string
@@ -576,30 +575,78 @@ export function RoutingSimulationPanel({
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Left - Acquirer & Controls */}
-      <Card className="shadow-sm border-0 bg-white rounded-3xl">
-        <CardContent className="p-6">
-          <div className="space-y-6">
-            <div>
-              <Label className="text-sm font-medium text-gray-700 mb-2 block">Acquirer ID</Label>
+    <div className="space-y-4">
+      <div className="rounded-xl border border-gray-200 bg-white p-4 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-medium text-gray-800">
+              Filter simulasi &amp; validasi rule
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Pilih acquirer, load rules, lalu simulasikan dengan atribut transaksi
+            </p>
+          </div>
+          <Badge
+            variant="secondary"
+            className={
+              enableSimulation
+                ? "bg-green-100 text-green-700 font-normal"
+                : "font-normal"
+            }
+          >
+            {enableSimulation ? "Simulation On" : "Simulation Off"}
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-gray-600">Acquirer ID</Label>
               <SearchSelect
-                items={(acquirers || []).map((a) => ({ id: Number(a.id), name: String(a.name) }))}
+                items={(acquirers || []).map((a) => ({
+                  id: Number(a.id),
+                  name: String(a.name),
+                }))}
                 value={acquirerId}
                 onChange={setAcquirerId}
-                placeholder="Select acquirer"
-                triggerClassName="w-full rounded-2xl border border-gray-300 justify-between"
+                placeholder="Pilih acquirer"
+                triggerClassName="w-full justify-between font-normal"
                 format="id-name"
-                contentClassName="p-0 w-[--radix-popover-trigger-width] max-h-[400px] overflow-auto rounded-xl shadow-lg"
+                contentClassName="p-0 w-[--radix-popover-trigger-width] max-h-[400px] overflow-auto"
               />
             </div>
 
-            <div className="flex space-x-3 items-center justify-between">
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50 border border-gray-200">
+              <Switch
+                id="enable-simulation"
+                checked={enableSimulation}
+                onCheckedChange={setEnableSimulation}
+              />
+              <div>
+                <Label
+                  htmlFor="enable-simulation"
+                  className="text-sm font-medium text-gray-800"
+                >
+                  Enable Simulation &amp; Validation
+                </Label>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Nonaktif: hanya load rules tanpa hitung match
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
               <Button
-                onClick={enableSimulation ? handleExecuteSimulation : handleValidateAllRules}
-                disabled={(enableSimulation ? isLoading : isValidating) || !selectedConnection}
+                onClick={
+                  enableSimulation
+                    ? handleExecuteSimulation
+                    : handleValidateAllRules
+                }
+                disabled={
+                  (enableSimulation ? isLoading : isValidating) ||
+                  !selectedConnection
+                }
                 variant="outline"
-                className="rounded-2xl border-blue-600 text-blue-600 hover:bg-blue-50 bg-transparent"
               >
                 {enableSimulation ? (
                   isLoading ? (
@@ -625,81 +672,62 @@ export function RoutingSimulationPanel({
                   </>
                 )}
               </Button>
-              <div className="flex space-x-3">
-                <Button
-                  onClick={() => {
-                    setCurrentPage(1)
-                    handleLoadRules({ page: 1, pageSize })
-                  }}
-                  disabled={isLoading}
-                  className="rounded-2xl bg-blue-600 hover:bg-blue-700"
-                >
-                  {isLoading ? (
-                    <RefreshCw className="h-4 w-4 animate-spin mr-2" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4 mr-2" />
-                  )}
-                  Load Rules
-                </Button>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl">
-              <div className="flex items-center space-x-3">
-                <Switch
-                  id="enable-simulation"
-                  checked={enableSimulation}
-                  onCheckedChange={setEnableSimulation}
-                  className="data-[state=checked]:bg-green-600"
-                />
-                <div>
-                  <Label htmlFor="enable-simulation" className="text-sm font-medium text-gray-800">
-                    Enable Simulation & Validation
-                  </Label>
-                  <p className="text-xs text-gray-500 mt-1">When disabled, only shows rules data without simulation</p>
-                </div>
-              </div>
+              <Button
+                onClick={() => {
+                  setCurrentPage(1)
+                  handleLoadRules({ page: 1, pageSize })
+                }}
+                disabled={isLoading || !selectedConnection}
+              >
+                {isLoading ? (
+                  <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Load Rules
+              </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Right - Simulation & Validation */}
-      <Card className="shadow-sm border-0 bg-white rounded-3xl">
-        <CardContent className="p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-800">Simulation & Validation</h3>
-            <Badge variant="secondary" className={enableSimulation ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-700"}>
-              {enableSimulation ? "Enabled" : "Disabled"}
-            </Badge>
-          </div>
-          <Textarea
-            placeholder="Paste Transaction Attributes in CSV format (ID,Field,Content) here..."
-            value={transactionData}
-            onChange={(e) => setTransactionData(e.target.value)}
-            onBlur={() => setTransactionData(normalizeToCsvIdFieldContent(transactionData))}
-            className="min-h-[140px] rounded-2xl font-mono text-sm border border-gray-300"
-          />
-          <div className="flex items-center justify-between">
-            <Button variant="link" size="sm" className="text-blue-600 hover:text-blue-700 p-0 h-auto" onClick={() => {
-              const sampleData = `ID,Field,Content\n1,IN.PAN_PREFIX,888832\n2,IN.GATEWAY_ID,242\n3,IN.BIN_CARD_BILLING_CURRENCY,360`
-              setTransactionData(sampleData)
-            }}>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-gray-600">
+                Transaction Attributes (CSV)
+              </Label>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={handlePasteFromClipboard}
+                title="Paste dari clipboard"
+                aria-label="Paste from clipboard"
+              >
+                <ClipboardPaste className="h-4 w-4" />
+              </Button>
+            </div>
+            <Textarea
+              placeholder="Paste Transaction Attributes (ID,Field,Content)..."
+              value={transactionData}
+              onChange={(e) => setTransactionData(e.target.value)}
+              onBlur={() =>
+                setTransactionData(normalizeToCsvIdFieldContent(transactionData))
+              }
+              className="min-h-[140px] font-mono text-sm"
+            />
+            <Button
+              variant="link"
+              size="sm"
+              className="text-blue-700 hover:text-blue-900 p-0 h-auto"
+              onClick={() => {
+                const sampleData = `ID,Field,Content\n1,IN.PAN_PREFIX,888832\n2,IN.GATEWAY_ID,242\n3,IN.BIN_CARD_BILLING_CURRENCY,360`
+                setTransactionData(sampleData)
+              }}
+            >
               Load Sample Data
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 rounded-lg hover:bg-gray-100"
-              onClick={handlePasteFromClipboard}
-              title="Paste transaction attributes from clipboard"
-              aria-label="Paste from clipboard"
-            >
-              <ClipboardPaste className="h-4 w-4" />
-            </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
       {/* Rule Syntax Validation Results Modal */}
       <Dialog open={validationModalOpen} onOpenChange={setValidationModalOpen}>
         <DialogContent className="max-w-7xl w-[92vw] rounded-2xl p-0 overflow-hidden border border-gray-200 bg-white">
