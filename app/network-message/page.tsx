@@ -310,6 +310,23 @@ function parseIso8583Preview(
   return preview;
 }
 
+function downloadStressReport(job: StressTestSnapshot) {
+  const rows = job.rows || [];
+  const header = "waktu,stan,rrn,jenis_transaksi,hasil,latency_ms";
+  const lines = rows.map((row) =>
+    [row.time, row.stan, row.rrn, row.transaction_type, row.success ? "sukses" : "gagal", String(row.latency_ms)]
+      .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
+      .join(",")
+  );
+  const blob = new Blob([[header, ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `stress-test-${job.job_id.slice(0, 8)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function formatStressTps(job: StressTestSnapshot) {
   const tps =
     typeof job.tps === "number"
@@ -1785,7 +1802,7 @@ export default function NetworkMessagePage() {
       </div>
 
       <Dialog open={showStressDialog} onOpenChange={setShowStressDialog}>
-        <DialogContent className="max-w-lg rounded-3xl">
+        <DialogContent className="max-w-3xl rounded-3xl">
           <DialogHeader>
             <DialogTitle className="text-xl font-semibold text-gray-900">
               Stress Test
@@ -1960,6 +1977,51 @@ export default function NetworkMessagePage() {
                         {item.count}× {item.message}
                       </div>
                     ))}
+                  </div>
+                )}
+                {(stressJob.rows?.length || 0) > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium text-gray-800">
+                        Laporan ({stressJob.rows?.length}
+                        {stressJob.rows_truncated ? "+" : ""})
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="rounded-full"
+                        onClick={() => downloadStressReport(stressJob)}
+                      >
+                        Unduh CSV
+                      </Button>
+                    </div>
+                    <div className="max-h-56 overflow-auto rounded-xl border border-gray-200 bg-white">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-gray-50 text-gray-500">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-medium">Waktu</th>
+                            <th className="px-3 py-2 text-left font-medium">STAN</th>
+                            <th className="px-3 py-2 text-left font-medium">RRN</th>
+                            <th className="px-3 py-2 text-left font-medium">Jenis Transaksi</th>
+                            <th className="px-3 py-2 text-left font-medium">Hasil</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stressJob.rows?.map((row, index) => (
+                            <tr key={`${row.time}-${row.stan}-${index}`} className="border-t border-gray-100">
+                              <td className="px-3 py-1.5 font-mono whitespace-nowrap">{row.time}</td>
+                              <td className="px-3 py-1.5 font-mono">{row.stan || "-"}</td>
+                              <td className="px-3 py-1.5 font-mono">{row.rrn || "-"}</td>
+                              <td className="px-3 py-1.5">{row.transaction_type || "-"}</td>
+                              <td className={`px-3 py-1.5 ${row.success ? "text-green-700" : "text-red-700"}`}>
+                                {row.success ? "Sukses" : "Gagal"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>

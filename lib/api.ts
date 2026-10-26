@@ -278,6 +278,17 @@ export interface StressTestSnapshot {
   errors: Array<{ message: string; count: number }>
   target: string
   protocol: string
+  rows?: StressTestReportRow[]
+  rows_truncated?: boolean
+}
+
+export interface StressTestReportRow {
+  time: string
+  stan: string
+  rrn: string
+  transaction_type: string
+  success: boolean
+  latency_ms: number
 }
 
 export interface ExportTransactionRequest {
