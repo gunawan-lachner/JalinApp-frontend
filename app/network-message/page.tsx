@@ -18,6 +18,7 @@ import {
   Plus,
   Loader2,
   Activity,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,6 +34,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -250,6 +252,56 @@ function encodeIsoField(fieldNo: number, value: string): string | null {
   return String(val.length).padStart(3, "0") + val;
 }
 
+type TracePair = { stan: string; rrn: string };
+
+const STAN_STORAGE_KEY = "network-message-stan";
+const AUTO_TRACE_STORAGE_KEY = "network-message-auto-trace";
+
+/** DE011 = STAN 6 digit. DE037 = Y + DDD + HH + STAN (12). */
+function nextTrace(now = new Date()): TracePair {
+  let current = Date.now() % 1000000;
+  if (typeof window !== "undefined") {
+    const saved = Number(window.sessionStorage.getItem(STAN_STORAGE_KEY));
+    if (Number.isFinite(saved) && saved >= 0) current = saved;
+  }
+  const stanNum = (Math.trunc(current) + 1) % 1000000;
+  if (typeof window !== "undefined") {
+    window.sessionStorage.setItem(STAN_STORAGE_KEY, String(stanNum));
+  }
+  const stan = String(stanNum).padStart(6, "0");
+  const year = String(now.getFullYear()).slice(-1);
+  const start = Date.UTC(now.getFullYear(), 0, 0);
+  const currentDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = Math.floor((currentDay - start) / 86400000);
+  const rrn = `${year}${String(day).padStart(3, "0")}${String(now.getHours()).padStart(2, "0")}${stan}`;
+  return { stan, rrn };
+}
+
+/** Swap DE011 and DE037 when those fields already exist. Bitmap and other DEs stay intact. */
+function applyTraceToIso(
+  msg: string,
+  trace: TracePair
+): { ascii: string; applied: Array<"DE011" | "DE037"> } | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+  let next = msg;
+  const applied: Array<"DE011" | "DE037"> = [];
+  if (parsed.dataElements[11] != null) {
+    const replaced = replaceIsoField(next, 11, trace.stan);
+    if (!replaced) return null;
+    next = replaced;
+    applied.push("DE011");
+  }
+  if (parsed.dataElements[37] != null) {
+    const replaced = replaceIsoField(next, 37, trace.rrn);
+    if (!replaced) return null;
+    next = replaced;
+    applied.push("DE037");
+  }
+  if (applied.length === 0) return null;
+  return { ascii: next, applied };
+}
+
 /** Replace one DE in the original ASCII message. Other fields and the bitmap stay intact. */
 function replaceIsoField(msg: string, fieldNo: number, value: string): string | null {
   const parsed = parseISO8583Ascii(msg);
@@ -353,6 +405,8 @@ export default function NetworkMessagePage() {
   const [stressConcurrency, setStressConcurrency] = useState(5);
   const [stressDelay, setStressDelay] = useState(0);
   const [incrementStan, setIncrementStan] = useState(true);
+  const [autoGenerateTrace, setAutoGenerateTrace] = useState(false);
+  const [pendingTrace, setPendingTrace] = useState<TracePair | null>(null);
   const [stressJob, setStressJob] = useState<StressTestSnapshot | null>(null);
   const [stressRunning, setStressRunning] = useState(false);
   const stressSummaryLogged = useRef<string | null>(null);
@@ -369,6 +423,50 @@ export default function NetworkMessagePage() {
   const [expandedFolders, setExpandedFolders] = useState<
     Record<string, boolean>
   >({});
+
+  useEffect(() => {
+    if (window.localStorage.getItem(AUTO_TRACE_STORAGE_KEY) === "1") {
+      setAutoGenerateTrace(true);
+      setPendingTrace(nextTrace());
+    }
+  }, []);
+
+  const onToggleAutoTrace = (enabled: boolean) => {
+    setAutoGenerateTrace(enabled);
+    window.localStorage.setItem(AUTO_TRACE_STORAGE_KEY, enabled ? "1" : "0");
+    setPendingTrace(enabled ? nextTrace() : null);
+    if (enabled) {
+      setDeDrafts((prev) => {
+        const copy = { ...prev };
+        delete copy.DE011;
+        delete copy.DE037;
+        return copy;
+      });
+    }
+  };
+
+  const prepareOutbound = ():
+    | { ascii: string; hex: string; trace: TracePair }
+    | { error: string }
+    | null => {
+    if (!autoGenerateTrace) return null;
+    const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+    if (!source) {
+      return { error: "Isi payload ASCII atau HEX terlebih dahulu." };
+    }
+    const trace = pendingTrace ?? nextTrace();
+    const applied = applyTraceToIso(source, trace);
+    if (!applied) {
+      return {
+        error: "DE011 dan DE037 tidak ada di payload, jadi tidak bisa di-generate.",
+      };
+    }
+    return { ascii: applied.ascii, hex: asciiToHex(applied.ascii), trace };
+  };
+
+  const commitOutboundTrace = () => {
+    if (autoGenerateTrace) setPendingTrace(nextTrace());
+  };
 
   // Fetch packets on mount and when search changes
   useEffect(() => {
@@ -616,7 +714,10 @@ export default function NetworkMessagePage() {
     setConnectionLogs([]);
   };
 
-  const sendPacketToServer = async (packetId?: number) => {
+  const sendPacketToServer = async (
+    packetId?: number,
+    outbound?: { ascii: string; hex: string; trace: TracePair }
+  ) => {
     setSaving(true);
     setError(null);
 
@@ -630,7 +731,20 @@ export default function NetworkMessagePage() {
       // Determine which endpoint to use based on whether we have a packet ID
       const targetId = packetId || selectedId;
 
-      if (targetId) {
+      if (outbound) {
+        // Auto-generated DE011/DE037 must go out as-is. The saved packet stays unchanged.
+        response = await rnaApi.sendPacket({
+          packet: {
+            id: targetId || undefined,
+            hex: outbound.hex,
+            address: address,
+            port: port,
+            protocol: protocol,
+            ascii: outbound.ascii,
+          },
+          persistentTcp: false,
+        });
+      } else if (targetId) {
         // Use sendPacketById endpoint when we have a packet ID
         // This endpoint loads the packet from the database and sends it
         response = await rnaApi.sendPacketById(targetId, false);
@@ -652,7 +766,9 @@ export default function NetworkMessagePage() {
       if (response.success && response.data) {
         toast({
           title: "Success",
-          description: "Packet sent successfully",
+          description: outbound
+            ? `Packet terkirim. STAN ${outbound.trace.stan}, RRN ${outbound.trace.rrn}`
+            : "Packet sent successfully",
         });
 
         // Extract logs from response according to API guide
@@ -718,6 +834,16 @@ export default function NetworkMessagePage() {
   };
 
   const onSend = async () => {
+    const outboundResult = prepareOutbound();
+    if (outboundResult && "error" in outboundResult) {
+      toast({
+        title: "Auto generate gagal",
+        description: outboundResult.error,
+        variant: "destructive",
+      });
+      return;
+    }
+    const outbound = outboundResult && "ascii" in outboundResult ? outboundResult : undefined;
     const needsSave = isNewPacket || hasChanges();
 
     if (needsSave) {
@@ -768,8 +894,8 @@ export default function NetworkMessagePage() {
             await loadPackets();
             if (packetId) {
               setSelectedId(packetId);
-              // Now send the packet
-              await sendPacketToServer(packetId);
+              commitOutboundTrace();
+              await sendPacketToServer(packetId, outbound);
             }
           } else {
             setError(response.error || "Failed to create packet");
@@ -815,8 +941,8 @@ export default function NetworkMessagePage() {
               description: "Packet updated successfully",
             });
             await loadPackets();
-            // Now send the packet
-            await sendPacketToServer(selectedId);
+            commitOutboundTrace();
+            await sendPacketToServer(selectedId, outbound);
           } else {
             setError(response.error || "Failed to update packet");
             toast({
@@ -839,8 +965,8 @@ export default function NetworkMessagePage() {
         }
       }
     } else {
-      // No changes - send directly
-      await sendPacketToServer();
+      commitOutboundTrace();
+      await sendPacketToServer(undefined, outbound);
     }
   };
 
@@ -897,6 +1023,17 @@ export default function NetworkMessagePage() {
       return;
     }
 
+    const outboundResult = prepareOutbound();
+    if (outboundResult && "error" in outboundResult) {
+      toast({
+        title: "Auto generate gagal",
+        description: outboundResult.error,
+        variant: "destructive",
+      });
+      return;
+    }
+    const outbound = outboundResult && "ascii" in outboundResult ? outboundResult : undefined;
+
     const count = Math.min(200, Math.max(1, Number(stressCount) || 1));
     const durationSec = Math.min(600, Math.max(1, Number(stressDuration) || 60));
     const concurrencyCap = stressMode === "duration" ? 10 : Math.min(10, count);
@@ -910,11 +1047,12 @@ export default function NetworkMessagePage() {
     setStressJob(null);
     stressSummaryLogged.current = null;
 
+    commitOutboundTrace();
     const response = await rnaApi.startNetworkStressTest({
       packet_id: selectedId || undefined,
       packet: {
-        hex: hex || "",
-        ascii: ascii || "",
+        hex: outbound?.hex || hex || "",
+        ascii: outbound?.ascii || ascii || "",
         address,
         port,
         protocol,
@@ -1507,12 +1645,51 @@ export default function NetworkMessagePage() {
 
                         {/* Parsed ISO8583 Preview */}
                         <div className="pt-4">
-                          <h3 className="text-md font-semibold text-gray-800 mb-1">
-                            Parsed ISO8583 Preview
-                          </h3>
+                          <div className="flex flex-wrap items-start justify-between gap-3 mb-1">
+                            <h3 className="text-md font-semibold text-gray-800">
+                              Parsed ISO8583 Preview
+                            </h3>
+                            <div className="flex items-center gap-3">
+                              {autoGenerateTrace && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="rounded-xl bg-transparent"
+                                  onClick={() => setPendingTrace(nextTrace())}
+                                >
+                                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                                  Generate ulang
+                                </Button>
+                              )}
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  id="auto-trace"
+                                  checked={autoGenerateTrace}
+                                  onCheckedChange={onToggleAutoTrace}
+                                />
+                                <Label
+                                  htmlFor="auto-trace"
+                                  className="text-sm text-gray-700 cursor-pointer"
+                                >
+                                  Auto generate DE011 & DE037
+                                </Label>
+                              </div>
+                            </div>
+                          </div>
                           <p className="text-xs text-gray-500 mb-3">
                             Edit MTI atau DE, lalu keluar dari kolom. ASCII dan HEX ikut berubah sebelum dikirim.
                           </p>
+                          {autoGenerateTrace && (
+                            <p className="text-xs text-blue-700 mb-3">
+                              Saat Send, DE011 diisi STAN 6 digit dan DE037 diisi RRN
+                              (digit tahun + hari Julian + jam + STAN). Packet tersimpan tidak berubah.
+                              Stress test tetap menaikkan STAN dan RRN bila opsi itu aktif.
+                              {pendingTrace
+                                ? ` Berikutnya: STAN ${pendingTrace.stan}, RRN ${pendingTrace.rrn}.`
+                                : ""}
+                            </p>
+                          )}
                           <div className="border border-gray-200 rounded-xl overflow-hidden">
                             <table className="w-full">
                               <thead className="bg-gray-50">
@@ -1538,16 +1715,45 @@ export default function NetworkMessagePage() {
                                   </tr>
                                 ) : (
                                   isoPreview.map((row, idx) => {
+                                    const isAutoTraceField =
+                                      autoGenerateTrace &&
+                                      (row.field === "DE011" || row.field === "DE037");
+                                    const autoValue =
+                                      row.field === "DE011"
+                                        ? pendingTrace?.stan
+                                        : row.field === "DE037"
+                                          ? pendingTrace?.rrn
+                                          : undefined;
                                     const editable =
-                                      row.field === "MTI" || /^DE\d{3}$/.test(row.field);
+                                      !isAutoTraceField &&
+                                      (row.field === "MTI" || /^DE\d{3}$/.test(row.field));
                                     const draft = deDrafts[row.field];
                                     return (
-                                      <tr key={idx} className="hover:bg-gray-50">
+                                      <tr
+                                        key={idx}
+                                        className={isAutoTraceField ? "bg-blue-50/60" : "hover:bg-gray-50"}
+                                      >
                                         <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
-                                          {row.field}
+                                          <span className="inline-flex items-center gap-2">
+                                            {row.field}
+                                            {isAutoTraceField && (
+                                              <Badge
+                                                variant="outline"
+                                                className="text-[10px] border-blue-200 text-blue-700"
+                                              >
+                                                Auto
+                                              </Badge>
+                                            )}
+                                          </span>
                                         </td>
                                         <td className="px-4 py-2 text-sm text-gray-900">
-                                          {editable ? (
+                                          {isAutoTraceField ? (
+                                            <Input
+                                              readOnly
+                                              value={autoValue || row.value}
+                                              className="h-8 font-mono text-xs bg-white"
+                                            />
+                                          ) : editable ? (
                                             <Input
                                               value={draft ?? row.value}
                                               onChange={(e) =>
