@@ -473,6 +473,22 @@ export function TransactionFilters({
               })}
             </div>
           )}
+
+          <div className="flex justify-end pt-1">
+            <Button
+              type="button"
+              onClick={onSearch}
+              disabled={isLoading || !selectedConnection}
+              className="h-8 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+              ) : (
+                <Search className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Cari dengan Filter
+            </Button>
+          </div>
         </div>
       )}
 

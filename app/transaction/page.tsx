@@ -516,7 +516,8 @@ export default function TransactionPage() {
           1,
           paginationState.pageSize,
           viewMode === "insights",
-          updated
+          updated,
+          true
         );
       }
       return updated;
@@ -549,7 +550,8 @@ export default function TransactionPage() {
     newPage = 1,
     newPageSize = paginationState.pageSize,
     forInsights: boolean,
-    overrideDynamicFilters?: DynamicFilter[]
+    overrideDynamicFilters?: DynamicFilter[],
+    forceRefresh = false
   ) => {
     if (!selectedConnection) {
       console.warn("⚠️ No connection selected, skipping search");
@@ -563,31 +565,38 @@ export default function TransactionPage() {
 
     const isPageChange = newPage !== paginationState.currentPage;
 
-    if (
-      forInsights &&
-      cachedInsightsData.length > 0 &&
-      !isPageChange &&
-      newPage === 1
-    ) {
-      console.log("📋 Using cached insights data");
-      setInsightsTransactions(cachedInsightsData);
-      setSelectedRows(new Set());
-      return;
-    } else if (
-      !forInsights &&
-      cachedTableData.length > 0 &&
-      !isPageChange &&
-      newPage === 1 &&
-      paginationState.currentPage === 1
-    ) {
-      console.log("📋 Using cached table data");
-      setTransactions(cachedTableData);
-      setPaginationState((prev) => ({
-        ...prev,
-        currentPage: 1,
-      }));
-      setSelectedRows(new Set());
-      return;
+    // Explicit "Cari" must always hit the API. Cache is only for view switches.
+    if (!forceRefresh) {
+      if (
+        forInsights &&
+        cachedInsightsData.length > 0 &&
+        !isPageChange &&
+        newPage === 1
+      ) {
+        console.log("📋 Using cached insights data");
+        setInsightsTransactions(cachedInsightsData);
+        setSelectedRows(new Set());
+        return;
+      }
+      if (
+        !forInsights &&
+        cachedTableData.length > 0 &&
+        !isPageChange &&
+        newPage === 1 &&
+        paginationState.currentPage === 1
+      ) {
+        console.log("📋 Using cached table data");
+        setTransactions(cachedTableData);
+        setPaginationState((prev) => ({
+          ...prev,
+          currentPage: 1,
+        }));
+        setSelectedRows(new Set());
+        return;
+      }
+    } else {
+      setCachedTableData([]);
+      setCachedInsightsData([]);
     }
 
     const requestId = ++latestSearchRequestId.current;
@@ -750,7 +759,14 @@ export default function TransactionPage() {
     setTransactionStatusFilter("all");
     if (selectedConnection) {
       setTimeout(
-        () => handleSearch(1, preferredPageSize, viewMode === "insights", []),
+        () =>
+          handleSearch(
+            1,
+            preferredPageSize,
+            viewMode === "insights",
+            [],
+            true
+          ),
         100
       );
     }
@@ -1551,7 +1567,9 @@ export default function TransactionPage() {
                   handleSearch(
                     1,
                     paginationState.pageSize,
-                    viewMode === "insights"
+                    viewMode === "insights",
+                    undefined,
+                    true
                   )
                 }
                 onClearFilters={clearFilters}
