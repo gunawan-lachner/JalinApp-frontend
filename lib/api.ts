@@ -523,10 +523,16 @@ export interface AiQueryResponseData {
 
 export interface AiQueryResponse {
   success: boolean
-  ai_response: AiQueryResponseData
-  user_request: string
-  profile_id: string
+  ai_response?: AiQueryResponseData
+  user_request?: string
+  profile_id?: string
   message?: string // For error messages from API
+  error?: string
+  error_details?: {
+    error_type?: string
+    error_message?: string
+    possible_causes?: string[]
+  }
 }
 
 // Gateway API interfaces based on the comprehensive brief

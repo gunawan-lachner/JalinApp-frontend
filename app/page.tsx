@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState, type ElementType } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, type ElementType } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import {
   CreditCard,
   Route,
@@ -94,14 +94,13 @@ function formatRoleName(roleName?: string | null) {
 
 export default function JalinApp() {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, accessiblePages, loading } = useAuth();
-  const [activeSection, setActiveSection] = useState("/");
 
   const handleNavigation = (href: string) => {
-    // Skip non-routable menu group stubs
-    if (EXPLORE_HIDDEN_PATHS.has(href)) return;
+    if (!href || EXPLORE_HIDDEN_PATHS.has(href)) return;
+    if (href === pathname) return;
     router.push(href);
-    setActiveSection(href);
   };
 
   const roleLabel = formatRoleName(user?.role_name);
@@ -260,7 +259,7 @@ export default function JalinApp() {
         {/* Sidebar - Fixed */}
         <div className="flex-shrink-0">
           <Sidebar
-            activeSection={activeSection}
+            activeSection={pathname || "/"}
             onNavigate={handleNavigation}
           />
         </div>

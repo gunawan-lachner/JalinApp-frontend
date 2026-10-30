@@ -90,11 +90,12 @@ const getIconForPage = (name: string, path: string): React.ElementType => {
 
 interface SidebarProps {
   activeSection: string;
-  onNavigate: (href: string) => void;
+  onNavigate?: (href: string) => void;
 }
 
 export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
   const pathname = usePathname();
+  const currentPath = pathname || activeSection;
   const { user, accessiblePages, logout } = useAuth();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isExpanded, setIsExpanded] = useState<boolean>(() => {
@@ -182,7 +183,6 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
 
   // Auto-expand parent group when a child route is active
   useEffect(() => {
-    const currentPath = activeSection || pathname;
     const activeChild = accessiblePages.find((page) => page.path === currentPath);
     if (!activeChild?.parent_id) return;
     const groupId = `group-${activeChild.parent_id}`;
@@ -196,10 +196,11 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
       }
       return next;
     });
-  }, [activeSection, pathname, accessiblePages]);
+  }, [currentPath, accessiblePages]);
 
   const handleItemClick = (path: string) => {
-    onNavigate(path);
+    if (!path || path === "#") return;
+    onNavigate?.(path);
   };
 
   const handleLogout = async () => {
@@ -373,8 +374,7 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
             if (entry.type === "group") {
               const isGroupOpen = !!expandedGroups[entry.id];
               const isGroupActive = entry.children.some(
-                (child) =>
-                  activeSection === child.href || pathname === child.href
+                (child) => currentPath === child.href
               );
 
               return (
@@ -432,9 +432,7 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
                   {isExpanded && isGroupOpen && (
                     <div className="mt-1 ml-4 space-y-1 border-l border-gray-200 pl-2">
                       {entry.children.map((child) => {
-                        const isActive =
-                          activeSection === child.href ||
-                          pathname === child.href;
+                        const isActive = currentPath === child.href;
 
                         return (
                           <button
@@ -470,8 +468,7 @@ export function Sidebar({ activeSection, onNavigate }: SidebarProps) {
             }
 
             const item = entry;
-            const isActive =
-              activeSection === item.href || pathname === item.href;
+            const isActive = currentPath === item.href;
 
             return (
               <div key={item.id}>
