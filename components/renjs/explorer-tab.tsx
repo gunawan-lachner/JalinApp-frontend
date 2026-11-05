@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Folder,
   FileText,
+  FilePlus,
   RefreshCw,
   ArrowUp,
   Save,
@@ -45,6 +46,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { rnaApi } from "@/lib/api"
 import { FolderBrowseDialog } from "@/components/renjs/folder-browse-dialog"
@@ -113,6 +123,14 @@ function fileNameFromGroup(group: string, fallback = "main"): string {
   return name
 }
 
+function sanitizeFileName(raw: string, defaultExt: string, fallback = "untitled"): string {
+  let name = (raw || "").trim() || fallback
+  name = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/^\.+/, "")
+  if (!name) name = fallback
+  if (!/\.[^.]+$/.test(name)) name += defaultExt.startsWith(".") ? defaultExt : `.${defaultExt}`
+  return name
+}
+
 export type ExplorerDbTarget = "renjs" | "gmm"
 
 interface ExplorerTabProps {
@@ -147,6 +165,9 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
   const [externalModifiedAt, setExternalModifiedAt] = useState<string | null>(null)
   const [reloading, setReloading] = useState(false)
   const [reloadConfirmOpen, setReloadConfirmOpen] = useState(false)
+  const [newFileOpen, setNewFileOpen] = useState(false)
+  const [newFileName, setNewFileName] = useState("")
+  const [newFileDirtyConfirmOpen, setNewFileDirtyConfirmOpen] = useState(false)
   const diskMtimeRef = useRef<number | null>(null)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null
@@ -191,6 +212,42 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
       return
     }
     closeEditor()
+  }
+
+  const defaultNewFileExt = dbTarget === "gmm" ? ".xslt" : ".renjs"
+  const defaultNewFileName = dbTarget === "gmm" ? "untitled.xslt" : "untitled.renjs"
+
+  const openNewFileDialog = () => {
+    setNewFileName(defaultNewFileName)
+    setNewFileOpen(true)
+  }
+
+  const requestCreateNewFile = () => {
+    if (isDirty) {
+      setNewFileDirtyConfirmOpen(true)
+      return
+    }
+    openNewFileDialog()
+  }
+
+  const createNewFile = () => {
+    const fileName = sanitizeFileName(newFileName, defaultNewFileExt)
+    setSelectedPath(null)
+    setSelectedName(fileName)
+    setContent("")
+    setSavedContent("")
+    setFileError(null)
+    rememberDiskMtime(null)
+    setExternalChanged(false)
+    setExternalModifiedAt(null)
+    setNewFileOpen(false)
+    setNewFileDirtyConfirmOpen(false)
+    toast({
+      title: "File baru",
+      description: activeFolder
+        ? `Siap diedit: ${fileName}. Klik Simpan untuk menulis ke folder aktif.`
+        : `Siap diedit: ${fileName}. Buka folder di Explorer lalu klik Simpan.`,
+    })
   }
 
   const persistActiveWorkspace = (id: number | null) => {
@@ -746,16 +803,29 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
                         {entries.length} item
                       </Badge>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 w-8 p-0 flex-shrink-0"
-                      onClick={() => setExplorerHidden(true)}
-                      title="Sembunyikan Explorer"
-                    >
-                      <PanelLeftClose className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={requestCreateNewFile}
+                        title="Buat file baru"
+                      >
+                        <FilePlus className="h-4 w-4" />
+                        <span className="sr-only">Buat file baru</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => setExplorerHidden(true)}
+                        title="Sembunyikan Explorer"
+                      >
+                        <PanelLeftClose className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="flex-1 overflow-y-auto">
                     {listLoading ? (
@@ -891,6 +961,15 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
                   <Button
                     size="sm"
                     variant="outline"
+                    onClick={requestCreateNewFile}
+                    title="Buat file baru di editor"
+                  >
+                    <FilePlus className="h-4 w-4 mr-2" />
+                    Buat file baru
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={() => {
                       setDbDialogIntent("load")
                       setSaveDbOpen(true)
@@ -967,8 +1046,12 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
                     Membaca file...
                   </div>
                 ) : !selectedPath && !selectedName ? (
-                  <div className="p-8 text-center text-gray-500 text-sm">
-                    Pilih file teks dari explorer untuk mengedit.
+                  <div className="p-8 text-center text-gray-500 text-sm space-y-4">
+                    <p>Pilih file teks dari explorer untuk mengedit, atau buat file baru.</p>
+                    <Button size="sm" variant="outline" onClick={requestCreateNewFile}>
+                      <FilePlus className="h-4 w-4 mr-2" />
+                      Buat file baru
+                    </Button>
                   </div>
                 ) : (
                   <CodeEditor
@@ -1087,6 +1170,80 @@ export function ExplorerTab({ dbTarget = "renjs" }: ExplorerTabProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={newFileDirtyConfirmOpen} onOpenChange={setNewFileDirtyConfirmOpen}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-amber-50">
+              <FilePlus className="h-6 w-6 text-amber-600" />
+            </div>
+            <AlertDialogTitle className="text-center">Buat file baru?</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-2">
+              <span className="block">
+                Ada perubahan yang belum disimpan. Perubahan akan hilang jika file baru dibuat.
+              </span>
+              {selectedName && (
+                <span className="block font-mono text-sm text-gray-800 break-all">{selectedName}</span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-center gap-2">
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                setNewFileDirtyConfirmOpen(false)
+                openNewFileDialog()
+              }}
+              className="bg-amber-600 hover:bg-amber-700 focus:ring-amber-600"
+            >
+              Lanjut
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={newFileOpen} onOpenChange={setNewFileOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Buat file baru</DialogTitle>
+            <DialogDescription>
+              File dibuka di editor. Klik Simpan untuk menulis ke folder aktif
+              {activeFolder ? ` (${activeFolder})` : ""}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="gmm-new-file-name">Nama file</Label>
+            <Input
+              id="gmm-new-file-name"
+              value={newFileName}
+              onChange={(e) => setNewFileName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  createNewFile()
+                }
+              }}
+              className="font-mono"
+              placeholder={defaultNewFileName}
+              autoFocus
+            />
+            <p className="text-xs text-gray-500">
+              Extensi default: {defaultNewFileExt}
+              {dbTarget === "gmm" ? " (XSLT)" : " (RENJS)"}
+            </p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setNewFileOpen(false)}>
+              Batal
+            </Button>
+            <Button type="button" onClick={createNewFile} disabled={!newFileName.trim()}>
+              <FilePlus className="h-4 w-4 mr-2" />
+              Buat
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
