@@ -8,6 +8,7 @@ interface AuthContextType {
   accessiblePages: AccessiblePage[]
   isAuthenticated: boolean
   loading: boolean
+  pagesLoaded: boolean
   canCrud: boolean
   login: (username: string, password: string) => Promise<{ success: boolean; data?: LoginResponse; error?: string }>
   logout: () => void
@@ -19,11 +20,31 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
+function normalizePath(path: string): string {
+  if (!path) return "/"
+  const trimmed = path.trim()
+  if (trimmed === "/") return "/"
+  return trimmed.replace(/\/+$/, "") || "/"
+}
+
+function readCachedPages(): AccessiblePage[] {
+  if (typeof window === "undefined") return []
+  try {
+    const cached = localStorage.getItem("accessible_pages")
+    if (!cached) return []
+    const parsed = JSON.parse(cached)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
-  const [accessiblePages, setAccessiblePages] = useState<AccessiblePage[]>([])
+  const [accessiblePages, setAccessiblePages] = useState<AccessiblePage[]>(() => readCachedPages())
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [pagesLoaded, setPagesLoaded] = useState(() => readCachedPages().length > 0)
   const [canCrud, setCanCrud] = useState(false)
 
   // Function to fetch user's accessible pages
@@ -49,18 +70,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshAccessiblePages = useCallback(async () => {
     const pages = await fetchAccessiblePages()
     setAccessiblePages(pages)
+    setPagesLoaded(true)
   }, [fetchAccessiblePages])
 
   // Function to check if user has access to a specific page
   const hasPageAccess = useCallback(
     (path: string): boolean => {
+      const normalized = normalizePath(path)
+
       // Always allow access to dashboard and login
-      if (path === "/" || path === "/login") {
+      if (normalized === "/" || normalized === "/login") {
         return true
       }
 
       // Check if the path exists in user's accessible pages
-      return accessiblePages.some((page) => page.path === path)
+      return accessiblePages.some(
+        (page) => normalizePath(page.path) === normalized,
+      )
     },
     [accessiblePages],
   )
@@ -89,6 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Fetch accessible pages
           const pages = await fetchAccessiblePages()
           setAccessiblePages(pages)
+          setPagesLoaded(true)
         } else {
           // Invalid token, clear everything
           tokenManager.clearToken()
@@ -98,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           setUser(null)
           setAccessiblePages([])
+          setPagesLoaded(false)
           setIsAuthenticated(false)
           setCanCrud(false)
         }
@@ -110,21 +138,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         setUser(null)
         setAccessiblePages([])
+        setPagesLoaded(false)
         setIsAuthenticated(false)
         setCanCrud(false)
       }
     } else {
-      // No token, try to load cached pages for UI consistency
-      if (typeof window !== "undefined") {
-        const cachedPages = localStorage.getItem("accessible_pages")
-        if (cachedPages) {
-          try {
-            setAccessiblePages(JSON.parse(cachedPages))
-          } catch (e) {
-            console.error("Failed to parse cached pages:", e)
-          }
-        }
-      }
+      // No token — clear auth; keep any cached pages only for login UI consistency
+      setAccessiblePages(readCachedPages())
+      setPagesLoaded(false)
       setUser(null)
       setIsAuthenticated(false)
       setCanCrud(false)
@@ -151,6 +172,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Immediately fetch accessible pages after login
           const pages = await fetchAccessiblePages()
           setAccessiblePages(pages)
+          setPagesLoaded(true)
 
           setLoading(false)
           return { success: true, data: response }
@@ -174,6 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setUser(null)
     setAccessiblePages([])
+    setPagesLoaded(false)
     setIsAuthenticated(false)
     setCanCrud(false)
   }, [])
@@ -185,6 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         accessiblePages,
         isAuthenticated,
         loading,
+        pagesLoaded,
         canCrud,
         login,
         logout,

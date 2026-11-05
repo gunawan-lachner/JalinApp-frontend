@@ -10,36 +10,56 @@ interface ProtectedRouteProps {
   children: React.ReactNode
 }
 
+function normalizePath(path: string): string {
+  if (!path) return "/"
+  const trimmed = path.trim()
+  if (trimmed === "/") return "/"
+  return trimmed.replace(/\/+$/, "") || "/"
+}
+
 export function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { isAuthenticated, loading, hasPageAccess } = useAuth()
+  const { isAuthenticated, loading, pagesLoaded, hasPageAccess } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
+  const currentPath = normalizePath(pathname || "/")
 
   useEffect(() => {
-    if (!loading) {
-      // If not authenticated and not on login page, redirect to login
-      if (!isAuthenticated && pathname !== "/login") {
-        router.push("/login")
-        return
-      }
+    if (loading) return
 
-      // If authenticated but trying to access login page, redirect to dashboard
-      if (isAuthenticated && pathname === "/login") {
-        router.push("/")
-        return
-      }
-
-      // If authenticated but doesn't have access to current page, redirect to dashboard
-      if (isAuthenticated && pathname !== "/login" && !hasPageAccess(pathname)) {
-        console.warn(`Access denied to ${pathname}, redirecting to dashboard`)
-        router.push("/")
-        return
-      }
+    // If not authenticated and not on login page, redirect to login
+    if (!isAuthenticated && currentPath !== "/login") {
+      router.replace("/login")
+      return
     }
-  }, [isAuthenticated, loading, pathname, router, hasPageAccess])
+
+    // If authenticated but trying to access login page, redirect to dashboard
+    if (isAuthenticated && currentPath === "/login") {
+      router.replace("/")
+      return
+    }
+
+    // Wait until accessible pages are loaded before enforcing page ACL.
+    // Redirecting too early (empty pages list) always dumps the user on Dashboard.
+    if (
+      isAuthenticated &&
+      currentPath !== "/login" &&
+      pagesLoaded &&
+      !hasPageAccess(currentPath)
+    ) {
+      console.warn(`Access denied to ${currentPath}, redirecting to dashboard`)
+      router.replace("/")
+    }
+  }, [
+    isAuthenticated,
+    loading,
+    pagesLoaded,
+    currentPath,
+    router,
+    hasPageAccess,
+  ])
 
   // Show loading spinner while checking authentication
-  if (loading) {
+  if (loading || (isAuthenticated && !pagesLoaded && currentPath !== "/login")) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
@@ -51,12 +71,17 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   // If not authenticated and not on login page, don't render anything (redirect will happen)
-  if (!isAuthenticated && pathname !== "/login") {
+  if (!isAuthenticated && currentPath !== "/login") {
     return null
   }
 
   // If authenticated but no access to current page, don't render anything (redirect will happen)
-  if (isAuthenticated && pathname !== "/login" && !hasPageAccess(pathname)) {
+  if (
+    isAuthenticated &&
+    currentPath !== "/login" &&
+    pagesLoaded &&
+    !hasPageAccess(currentPath)
+  ) {
     return null
   }
 
