@@ -255,6 +255,26 @@ export interface StressTestRequest {
   concurrency: number
   delay_ms: number
   increment_stan: boolean
+  increment_atc?: boolean
+  /** Strip DE55 before send so host does not validate ARQC/ATC. */
+  iso_only?: boolean
+}
+
+export interface ArqcSimResult {
+  arqc: string
+  current_arqc: string
+  match: boolean
+  atc: string
+  mac_input: string
+  udk: string
+  session_key: string
+  ascii: string
+}
+
+export interface ArqcSelfTestResult {
+  ok: boolean
+  arqc: string
+  expected_arqc: string
 }
 
 export interface StressTestSnapshot {
@@ -286,6 +306,7 @@ export interface StressTestReportRow {
   time: string
   stan: string
   rrn: string
+  atc?: string
   transaction_type: string
   success: boolean
   latency_ms: number
@@ -684,7 +705,11 @@ export interface SimpleIdName {
 }
 
 // Generic API call function with JWT authentication
-async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+async function apiCall<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  quiet = false,
+): Promise<ApiResponse<T>> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT)
 
@@ -692,7 +717,7 @@ async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<
     const fullUrl = `${getBaseUrl()}${endpoint}`
     console.log(`🌐 Making API call to: ${fullUrl}`)
     console.log(`📋 Method: ${options.method || "GET"}`)
-    if (options.body) {
+    if (options.body && !quiet) {
       console.log(`📦 Request body:`, JSON.parse(options.body as string))
     }
 
@@ -738,7 +763,7 @@ async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<
     if (isJson) {
       try {
         data = await response.json()
-        console.log(`✅ API Response data (or error data):`, data)
+        if (!quiet) console.log(`✅ API Response data (or error data):`, data)
       } catch (e) {
         console.error(`❌ Could not parse JSON response`, e)
         errorText = `Could not parse JSON response: ${e instanceof Error ? e.message : String(e)}`
@@ -3499,6 +3524,27 @@ export const rnaApi = {
       `/network-message/stress-test/${jobId}/stop`,
       { method: "POST" },
     )
+  },
+
+  simulateArqc: async (request: {
+    ascii: string
+    imk: string
+  }): Promise<ApiResponse<{ success: boolean; data: ArqcSimResult }>> => {
+    return apiCall<{ success: boolean; data: ArqcSimResult }>(
+      "/network-message/arqc-sim",
+      {
+        method: "POST",
+        body: JSON.stringify(request),
+      },
+      true,
+    )
+  },
+
+  verifyArqcFormula: async (): Promise<ApiResponse<{ success: boolean; data: ArqcSelfTestResult }>> => {
+    return apiCall<{ success: boolean; data: ArqcSelfTestResult }>("/network-message/arqc-sim", {
+      method: "POST",
+      body: JSON.stringify({ self_test: true }),
+    })
   },
 
   // SSH Transfer APIs

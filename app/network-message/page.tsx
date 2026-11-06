@@ -54,6 +54,7 @@ import {
   type TrafficLog,
   type ConnectionLog,
   type StressTestSnapshot,
+  type ArqcSimResult,
 } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 
@@ -136,7 +137,8 @@ const ISO8583_FIELDS: Record<
   49: { type: "fixed", len: 3 },
   50: { type: "fixed", len: 3 },
   51: { type: "fixed", len: 3 },
-  52: { type: "fixed", len: 8 },
+  // PIN block is 8 bytes, stored as 16 hex ASCII characters in this traffic.
+  52: { type: "fixed", len: 16 },
   53: { type: "fixed", len: 16 },
   54: { type: "lllvar", max_len: 120 },
   55: { type: "lllvar", max_len: 999 },
@@ -149,6 +151,14 @@ const ISO8583_FIELDS: Record<
   62: { type: "lllvar", max_len: 999 },
   63: { type: "lllvar", max_len: 999 },
   64: { type: "fixed", len: 8 },
+  120: { type: "lllvar", max_len: 999 },
+  121: { type: "lllvar", max_len: 999 },
+  122: { type: "lllvar", max_len: 999 },
+  123: { type: "lllvar", max_len: 999 },
+  124: { type: "lllvar", max_len: 999 },
+  125: { type: "lllvar", max_len: 999 },
+  126: { type: "lllvar", max_len: 999 },
+  127: { type: "lllvar", max_len: 999 },
 };
 
 // Convert hex string to binary string
@@ -302,6 +312,187 @@ function applyTraceToIso(
   return { ascii: next, applied };
 }
 
+const ATM_SCENARIOS = [
+  { proc: "010000", label: "Tarik Tunai", emvType: "01" },
+  { proc: "310000", label: "Cek Saldo", emvType: "30" },
+];
+
+const RC_LABELS: Record<string, string> = {
+  "00": "Disetujui",
+  "05": "Ditolak",
+  "14": "Kartu tidak dikenal",
+  "41": "Kartu hilang",
+  "43": "Kartu dicuri",
+  "51": "Saldo tidak cukup",
+  "54": "Kartu kedaluwarsa",
+  "55": "PIN salah",
+  "59": "Lost or Stolen Card",
+  "75": "PIN terblokir",
+  "91": "Issuer tidak menjawab",
+  "96": "Gangguan sistem",
+};
+
+type AtmCloseout = {
+  mti: string;
+  rc: string;
+  rcLabel: string;
+  arpc: string;
+  decision: string;
+  canDispense: boolean;
+};
+
+function emvTypeForProc(proc: string): string | null {
+  return ATM_SCENARIOS.find((item) => item.proc === proc)?.emvType ?? null;
+}
+
+function de4ToRupiah(de4: string): string {
+  const minor = Number(de4);
+  if (!Number.isFinite(minor)) return "";
+  return String(Math.trunc(minor / 100));
+}
+
+function rupiahToDe4(input: string): string | null {
+  const digits = input.replace(/\D/g, "");
+  if (!digits) return null;
+  const minor = Number(digits) * 100;
+  if (!Number.isFinite(minor) || minor < 0 || minor > 999999999999) return null;
+  return String(minor).padStart(12, "0");
+}
+
+function readScenario(msg: string): { proc: string; amount: string } | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+  const proc = (parsed.dataElements[3] || "010000").slice(0, 6);
+  const de4 = parsed.dataElements[4];
+  return { proc, amount: de4 ? de4ToRupiah(de4) : "" };
+}
+
+function replaceEmvTag(body: string, tagHex: string, valueHex: string): string | null {
+  const bytes = Array.from(body, (char) => char.charCodeAt(0) & 0xff);
+  const wanted = (tagHex.match(/.{1,2}/g) || []).map((hex) => Number.parseInt(hex, 16));
+  const value = (valueHex.match(/.{1,2}/g) || []).map((hex) => Number.parseInt(hex, 16));
+  if (wanted.length === 0 || value.length === 0) return null;
+  let index = 0;
+  while (index < bytes.length) {
+    const first = bytes[index];
+    const tag = [first];
+    index += 1;
+    if ((first & 0x1f) === 0x1f) {
+      if (index >= bytes.length) return null;
+      tag.push(bytes[index]);
+      index += 1;
+      while (index < bytes.length && (bytes[index - 1] & 0x80)) {
+        tag.push(bytes[index]);
+        index += 1;
+      }
+    }
+    if (index >= bytes.length) return null;
+    let length = bytes[index];
+    index += 1;
+    if (length & 0x80) {
+      const count = length & 0x7f;
+      if (index + count > bytes.length) return null;
+      length = 0;
+      for (let offset = 0; offset < count; offset += 1) {
+        length = (length << 8) | bytes[index + offset];
+      }
+      index += count;
+    }
+    if (index + length > bytes.length) return null;
+    const same = tag.length === wanted.length && tag.every((byte, tagIndex) => byte === wanted[tagIndex]);
+    if (same) {
+      if (length !== value.length) return null;
+      const next = bytes.slice();
+      for (let offset = 0; offset < value.length; offset += 1) next[index + offset] = value[offset];
+      return String.fromCharCode(...next);
+    }
+    index += length;
+  }
+  return null;
+}
+
+function applyScenarioToIso(
+  msg: string,
+  options: { proc: string; amount12: string | null; pinBlock: string | null; emvType: string | null }
+): string | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+  let next = msg;
+  if (options.proc && parsed.dataElements[3] != null) {
+    const replaced = replaceIsoField(next, 3, options.proc);
+    if (!replaced) return null;
+    next = replaced;
+  }
+  if (options.amount12 && parsed.dataElements[4] != null) {
+    const replaced = replaceIsoField(next, 4, options.amount12);
+    if (!replaced) return null;
+    next = replaced;
+  }
+  if (options.pinBlock && parsed.dataElements[52] != null) {
+    const replaced = replaceIsoField(next, 52, options.pinBlock);
+    if (!replaced) return null;
+    next = replaced;
+  }
+  if (!options.amount12 && !options.emvType) return next;
+  const current = parseISO8583Ascii(next);
+  const range = current?.ranges[55];
+  if (!current || !range || current.dataElements[55] == null) return next;
+  const raw = next.slice(range.start, range.end);
+  let body = raw.slice(3);
+  if (options.amount12) body = replaceEmvTag(body, "9F02", options.amount12) || body;
+  if (options.emvType) body = replaceEmvTag(body, "9C", options.emvType) || body;
+  const encoded = String(body.length).padStart(3, "0") + body;
+  return next.slice(0, range.start) + encoded + next.slice(range.end);
+}
+
+function buildReversal(msg: string): string | null {
+  const mti = msg.slice(0, 4);
+  if (mti !== "0200" && mti !== "0100") return null;
+  return `0400${msg.slice(4)}`;
+}
+
+function responseAsciiFromLogs(logs: Array<{ type?: string; data?: string }>): string {
+  const inbound = logs.find(
+    (log) => log.type === "IN" && /Response:\s*[0-9A-Fa-f]{8,}/.test(log.data || "")
+  );
+  const match = inbound?.data?.match(/Response:\s*([0-9A-Fa-f]+)/);
+  return match ? hexToAscii(match[1]) : "";
+}
+
+function interpretCloseout(msg: string, chip: boolean, reversal: boolean): AtmCloseout | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+  const rc = (parsed.dataElements[39] || "").trim();
+  const tags = parsed.dataElements[55] ? parseEmvTlvs(parsed.dataElements[55]) : [];
+  const arpc = tags.find((tag) => tag.tag === "91")?.value || "";
+  const approved = rc === "00";
+  let decision: string;
+  if (reversal) {
+    decision = approved
+      ? "Reversal diterima. Transaksi dibatalkan dan uang tidak keluar."
+      : "Reversal ditolak. Cek status transaksi di issuer.";
+  } else if (!approved) {
+    decision = chip
+      ? "Issuer menolak. Kartu menjawab AAC. Uang tidak keluar."
+      : "Magstripe ditolak. Uang tidak keluar.";
+  } else if (chip && arpc) {
+    decision =
+      "Issuer setuju dan mengirim ARPC. Kartu menerima ARPC, cryptogram akhir TC. Uang boleh keluar.";
+  } else if (chip) {
+    decision = "Issuer setuju tanpa ARPC. Uang boleh keluar.";
+  } else {
+    decision = "Magstripe disetujui. Uang boleh keluar.";
+  }
+  return {
+    mti: parsed.mti,
+    rc,
+    rcLabel: RC_LABELS[rc] || "Kode jawaban",
+    arpc,
+    decision,
+    canDispense: !reversal && approved,
+  };
+}
+
 /** Replace one DE in the original ASCII message. Other fields and the bitmap stay intact. */
 function replaceIsoField(msg: string, fieldNo: number, value: string): string | null {
   const parsed = parseISO8583Ascii(msg);
@@ -310,6 +501,220 @@ function replaceIsoField(msg: string, fieldNo: number, value: string): string | 
   if (!range) return null;
   const encoded = encodeIsoField(fieldNo, value);
   if (encoded == null) return null;
+  return msg.slice(0, range.start) + encoded + msg.slice(range.end);
+}
+
+const EMV_TAG_NAMES: Record<string, string> = {
+  "9F26": "ARQC",
+  "9F27": "CID",
+  "9F10": "IAD",
+  "9F36": "ATC",
+  "9F37": "Unpredictable Number",
+  "95": "TVR",
+  "9A": "Transaction Date",
+  "9C": "Transaction Type",
+  "9F02": "Amount",
+  "9F03": "Amount Other",
+  "5A": "PAN",
+  "5F2A": "Currency",
+  "82": "AIP",
+  "9F1A": "Terminal Country",
+  "5F34": "PAN Sequence",
+  "9F33": "Terminal Capabilities",
+  "9F34": "CVM Results",
+  "9F35": "Terminal Type",
+  "9F1E": "IFD Serial",
+  "84": "DF Name",
+  "9F09": "App Version",
+  "9F41": "Transaction Sequence",
+  "9F06": "AID",
+};
+
+function decodeEmvValue(tag: string, hexValue: string): string {
+  if (tag === "9F36" && hexValue.length === 4) {
+    return String(Number.parseInt(hexValue, 16));
+  }
+  if ((tag === "9F02" || tag === "9F03") && /^\d+$/.test(hexValue)) {
+    return (Number(hexValue) / 100).toFixed(2);
+  }
+  if (tag === "9A" && hexValue.length === 6) {
+    return `20${hexValue.slice(0, 2)}-${hexValue.slice(2, 4)}-${hexValue.slice(4, 6)}`;
+  }
+  if (tag === "9C") {
+    const labels: Record<string, string> = {
+      "00": "Purchase",
+      "01": "Cash",
+      "30": "Balance Inquiry",
+      "31": "Balance Inquiry",
+    };
+    return labels[hexValue] || hexValue;
+  }
+  if (tag === "9F1E" && hexValue.length % 2 === 0) {
+    const text = hexValue
+      .match(/.{1,2}/g)!
+      .map((b) => String.fromCharCode(Number.parseInt(b, 16)))
+      .join("");
+    if (/^[\x20-\x7E]+$/.test(text)) return text;
+  }
+  return "";
+}
+
+function parseEmvTlvs(de55: string): Array<{
+  tag: string;
+  name: string;
+  length: number;
+  value: string;
+  decoded: string;
+}> {
+  const bytes: number[] = [];
+  for (let i = 0; i < de55.length; i++) bytes.push(de55.charCodeAt(i) & 0xff);
+  const tags: Array<{
+    tag: string;
+    name: string;
+    length: number;
+    value: string;
+    decoded: string;
+  }> = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const first = bytes[i];
+    const tagBytes: number[] = [first];
+    i += 1;
+    if ((first & 0x1f) === 0x1f) {
+      if (i >= bytes.length) break;
+      tagBytes.push(bytes[i]);
+      i += 1;
+      while (i < bytes.length && (bytes[i - 1] & 0x80)) {
+        tagBytes.push(bytes[i]);
+        i += 1;
+      }
+    }
+    if (i >= bytes.length) break;
+    let length = bytes[i];
+    i += 1;
+    if (length & 0x80) {
+      const n = length & 0x7f;
+      if (i + n > bytes.length) break;
+      length = 0;
+      for (let k = 0; k < n; k++) length = (length << 8) | bytes[i + k];
+      i += n;
+    }
+    if (i + length > bytes.length) break;
+    const tag = tagBytes
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .toUpperCase();
+    const value = bytes
+      .slice(i, i + length)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .toUpperCase();
+    tags.push({
+      tag,
+      name: EMV_TAG_NAMES[tag] || "Unknown",
+      length,
+      value,
+      decoded: decodeEmvValue(tag, value),
+    });
+    i += length;
+  }
+  return tags;
+}
+
+function bitsToHex(bits: string): string {
+  const padded = bits.length % 4 === 0 ? bits : bits.padEnd(Math.ceil(bits.length / 4) * 4, "0");
+  let out = "";
+  for (let i = 0; i < padded.length; i += 4) {
+    out += Number.parseInt(padded.slice(i, i + 4), 2).toString(16).toUpperCase();
+  }
+  return out;
+}
+
+/** ISO Only: strip DE55 and set DE22 to magstripe (801). */
+function applyIsoOnlyTransform(msg: string): string | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed) return null;
+
+  const fieldValues: Record<number, string> = {};
+  for (const [key, value] of Object.entries(parsed.dataElements)) {
+    const fieldNo = Number(key);
+    if (fieldNo === 55) continue;
+    const range = parsed.ranges[fieldNo];
+    // Keep original encoding (including LL/LLL prefix) from the raw message.
+    fieldValues[fieldNo] = range ? msg.slice(range.start, range.end) : value;
+  }
+  // Magstripe POS entry mode (matches BI-BRI / GMM-BI-BRI packets).
+  fieldValues[22] = "801";
+
+  const present = Object.keys(fieldValues)
+    .map(Number)
+    .sort((a, b) => a - b);
+  const needsSecondary = present.some((fieldNo) => fieldNo > 64);
+  const bitCount = needsSecondary ? 128 : 64;
+  const bits = Array.from({ length: bitCount }, () => "0");
+  if (needsSecondary) bits[0] = "1";
+  for (const fieldNo of present) {
+    if (fieldNo > 1 && fieldNo <= bitCount) bits[fieldNo - 1] = "1";
+  }
+  const primaryHex = bitsToHex(bits.slice(0, 64).join(""));
+  const secondaryHex = needsSecondary ? bitsToHex(bits.slice(64, 128).join("")) : "";
+  const body = present.map((fieldNo) => fieldValues[fieldNo]).join("");
+  return `${parsed.mti}${primaryHex}${secondaryHex}${body}`;
+}
+
+function stripDe55FromIso(msg: string): string | null {
+  return applyIsoOnlyTransform(msg);
+}
+
+function bumpEmvAtcInMessage(msg: string, delta = 1): string | null {
+  const parsed = parseISO8583Ascii(msg);
+  if (!parsed || parsed.dataElements[55] == null) return null;
+  const range = parsed.ranges[55];
+  if (!range) return null;
+  const raw = msg.slice(range.start, range.end); // includes LLL
+  if (raw.length < 3) return null;
+  const body = raw.slice(3);
+  const bytes = Array.from(body, (c) => c.charCodeAt(0) & 0xff);
+  const wanted = [0x9f, 0x36];
+  let i = 0;
+  let valueStart = -1;
+  while (i < bytes.length) {
+    const first = bytes[i];
+    const tag: number[] = [first];
+    i += 1;
+    if ((first & 0x1f) === 0x1f) {
+      if (i >= bytes.length) break;
+      tag.push(bytes[i]);
+      i += 1;
+      while (i < bytes.length && (bytes[i - 1] & 0x80)) {
+        tag.push(bytes[i]);
+        i += 1;
+      }
+    }
+    if (i >= bytes.length) break;
+    let length = bytes[i];
+    i += 1;
+    if (length & 0x80) {
+      const n = length & 0x7f;
+      if (i + n > bytes.length) break;
+      length = 0;
+      for (let k = 0; k < n; k++) length = (length << 8) | bytes[i + k];
+      i += n;
+    }
+    if (i + length > bytes.length) break;
+    if (tag.length === 2 && tag[0] === wanted[0] && tag[1] === wanted[1] && length === 2) {
+      valueStart = i;
+      break;
+    }
+    i += length;
+  }
+  if (valueStart < 0) return null;
+  const current = (bytes[valueStart] << 8) | bytes[valueStart + 1];
+  const next = (current + delta) & 0xffff;
+  bytes[valueStart] = (next >> 8) & 0xff;
+  bytes[valueStart + 1] = next & 0xff;
+  const newBody = String.fromCharCode(...bytes);
+  const encoded = String(newBody.length).padStart(3, "0") + newBody;
   return msg.slice(0, range.start) + encoded + msg.slice(range.end);
 }
 
@@ -364,9 +769,17 @@ function parseIso8583Preview(
 
 function downloadStressReport(job: StressTestSnapshot) {
   const rows = job.rows || [];
-  const header = "waktu,stan,rrn,jenis_transaksi,hasil,latency_ms";
+  const header = "waktu,stan,rrn,atc,jenis_transaksi,hasil,latency_ms";
   const lines = rows.map((row) =>
-    [row.time, row.stan, row.rrn, row.transaction_type, row.success ? "sukses" : "gagal", String(row.latency_ms)]
+    [
+      row.time,
+      row.stan,
+      row.rrn,
+      row.atc || "",
+      row.transaction_type,
+      row.success ? "sukses" : "gagal",
+      String(row.latency_ms),
+    ]
       .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
       .join(",")
   );
@@ -405,6 +818,18 @@ export default function NetworkMessagePage() {
   const [stressConcurrency, setStressConcurrency] = useState(5);
   const [stressDelay, setStressDelay] = useState(0);
   const [incrementStan, setIncrementStan] = useState(true);
+  const [incrementAtc, setIncrementAtc] = useState(false);
+  const [isoOnly, setIsoOnly] = useState(false);
+  const [scenarioOn, setScenarioOn] = useState(true);
+  const [scenarioProc, setScenarioProc] = useState("010000");
+  const [scenarioAmount, setScenarioAmount] = useState("");
+  const [scenarioPin, setScenarioPin] = useState("");
+  const [gpoAtc, setGpoAtc] = useState(false);
+  const [closeout, setCloseout] = useState<AtmCloseout | null>(null);
+  const lastOutboundRef = useRef<string>("");
+  const [imkAc, setImkAc] = useState("");
+  const [arqcSim, setArqcSim] = useState<ArqcSimResult | null>(null);
+  const [arqcBusy, setArqcBusy] = useState(false);
   const [autoGenerateTrace, setAutoGenerateTrace] = useState(false);
   const [pendingTrace, setPendingTrace] = useState<TracePair | null>(null);
   const [stressJob, setStressJob] = useState<StressTestSnapshot | null>(null);
@@ -446,22 +871,53 @@ export default function NetworkMessagePage() {
   };
 
   const prepareOutbound = ():
-    | { ascii: string; hex: string; trace: TracePair }
+    | { ascii: string; hex: string; trace?: TracePair }
     | { error: string }
     | null => {
-    if (!autoGenerateTrace) return null;
-    const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+    if (!autoGenerateTrace && !isoOnly && !scenarioOn) return null;
+    let source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
     if (!source) {
       return { error: "Isi payload ASCII atau HEX terlebih dahulu." };
     }
-    const trace = pendingTrace ?? nextTrace();
-    const applied = applyTraceToIso(source, trace);
-    if (!applied) {
-      return {
-        error: "DE011 dan DE037 tidak ada di payload, jadi tidak bisa di-generate.",
-      };
+    if (scenarioOn) {
+      const amount12 = scenarioAmount.trim() ? rupiahToDe4(scenarioAmount) : null;
+      if (scenarioAmount.trim() && !amount12) {
+        return { error: "Nominal tidak valid." };
+      }
+      const pin = scenarioPin.replace(/\s+/g, "").toUpperCase();
+      if (pin && !/^[0-9A-F]{16}$/.test(pin)) {
+        return { error: "PIN block harus 16 karakter hex." };
+      }
+      const applied = applyScenarioToIso(source, {
+        proc: scenarioProc,
+        amount12,
+        pinBlock: pin || null,
+        emvType: emvTypeForProc(scenarioProc),
+      });
+      if (!applied) return { error: "Skenario tidak bisa diterapkan ke payload." };
+      source = applied;
     }
-    return { ascii: applied.ascii, hex: asciiToHex(applied.ascii), trace };
+    let trace: TracePair | undefined;
+    if (autoGenerateTrace) {
+      trace = pendingTrace ?? nextTrace();
+      const applied = applyTraceToIso(source, trace);
+      if (!applied) {
+        return {
+          error: "DE011 dan DE037 tidak ada di payload, jadi tidak bisa di-generate.",
+        };
+      }
+      // Jangan naikkan ATC: ARQC terikat ke ATC. ATC baru + ARQC lama = Invalid ARQC.
+      source = applied.ascii;
+    }
+    if (isoOnly) {
+      source = stripDe55FromIso(source) || source;
+    } else {
+      const chip = parseISO8583Ascii(source);
+      if (chip?.dataElements[55] != null && chip.dataElements[22] != null && chip.dataElements[22] !== "051") {
+        source = replaceIsoField(source, 22, "051") || source;
+      }
+    }
+    return { ascii: source, hex: asciiToHex(source), trace };
   };
 
   const commitOutboundTrace = () => {
@@ -561,6 +1017,15 @@ export default function NetworkMessagePage() {
       setHex(selected.hex || "");
       setComment(selected.comment || "");
       setDeDrafts({});
+      setArqcSim(null);
+      setCloseout(null);
+      setScenarioPin("");
+      setGpoAtc(false);
+      const seeded = readScenario(selected.ascii || "");
+      if (seeded) {
+        setScenarioProc(seeded.proc);
+        setScenarioAmount(seeded.amount);
+      }
       // Clear logs when selecting a different packet
       setTrafficLogs([]);
       setConnectionLogs([]);
@@ -576,6 +1041,12 @@ export default function NetworkMessagePage() {
       setHex("");
       setComment("");
       setDeDrafts({});
+      setArqcSim(null);
+      setCloseout(null);
+      setScenarioProc("010000");
+      setScenarioAmount("");
+      setScenarioPin("");
+      setGpoAtc(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, isNewPacket]);
@@ -716,7 +1187,8 @@ export default function NetworkMessagePage() {
 
   const sendPacketToServer = async (
     packetId?: number,
-    outbound?: { ascii: string; hex: string; trace: TracePair }
+    outbound?: { ascii: string; hex: string; trace?: TracePair },
+    kind: "request" | "reversal" = "request"
   ) => {
     setSaving(true);
     setError(null);
@@ -764,10 +1236,15 @@ export default function NetworkMessagePage() {
       }
 
       if (response.success && response.data) {
+        const extras: string[] = [];
+        if (outbound?.trace) {
+          extras.push(`STAN ${outbound.trace.stan}`, `RRN ${outbound.trace.rrn}`);
+        }
+        if (isoOnly) extras.push("ISO Only (tanpa DE55)");
         toast({
           title: "Success",
-          description: outbound
-            ? `Packet terkirim. STAN ${outbound.trace.stan}, RRN ${outbound.trace.rrn}`
+          description: extras.length
+            ? `Packet terkirim. ${extras.join(", ")}`
             : "Packet sent successfully",
         });
 
@@ -787,6 +1264,18 @@ export default function NetworkMessagePage() {
         }
         if (connectionLogsFromResponse.length > 0) {
           setConnectionLogs(connectionLogsFromResponse);
+        }
+        const sentAscii =
+          outbound?.ascii || ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+        if (kind === "request" && (sentAscii.startsWith("0200") || sentAscii.startsWith("0100"))) {
+          lastOutboundRef.current = sentAscii;
+        }
+        const responseAscii = responseAsciiFromLogs(trafficLogsFromResponse);
+        if (responseAscii) {
+          const parsed = parseISO8583Ascii(responseAscii);
+          const reversal =
+            kind === "reversal" || parsed?.mti === "0410" || parsed?.mti === "0430";
+          setCloseout(interpretCloseout(responseAscii, !isoOnly, reversal));
         }
 
         // Switch to logs tab to show the results
@@ -843,7 +1332,41 @@ export default function NetworkMessagePage() {
       });
       return;
     }
-    const outbound = outboundResult && "ascii" in outboundResult ? outboundResult : undefined;
+    let outbound = outboundResult && "ascii" in outboundResult ? outboundResult : undefined;
+    if (gpoAtc && !isoOnly) {
+      const base = outbound?.ascii || ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+      const key = imkAc.replace(/\s+/g, "");
+      if (!/^[0-9a-fA-F]{32}$/.test(key)) {
+        toast({
+          title: "GPO butuh IMK-AC",
+          description:
+            "ATC naik saat kirim. Isi IMK-AC di Simulator ARQC supaya ARQC ikut dihitung ulang.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const bumped = bumpEmvAtcInMessage(base, 1);
+      if (!bumped) {
+        toast({
+          title: "ATC tidak ditemukan",
+          description: "Payload chip tidak punya tag 9F36.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const simulated = await rnaApi.simulateArqc({ ascii: bumped, imk: key });
+      const result = simulated.success ? simulated.data?.data : undefined;
+      if (!result?.ascii) {
+        toast({
+          title: "ARQC tidak terhitung",
+          description: simulated.error || "Generate AC gagal.",
+          variant: "destructive",
+        });
+        return;
+      }
+      outbound = { ascii: result.ascii, hex: asciiToHex(result.ascii), trace: outbound?.trace };
+      setArqcSim(result);
+    }
     const needsSave = isNewPacket || hasChanges();
 
     if (needsSave) {
@@ -970,6 +1493,23 @@ export default function NetworkMessagePage() {
     }
   };
 
+  const onDispenseFailed = async () => {
+    const reversal = buildReversal(lastOutboundRef.current);
+    if (!reversal) {
+      toast({
+        title: "Reversal tidak bisa dibuat",
+        description: "Kirim dulu request 0100 atau 0200.",
+        variant: "destructive",
+      });
+      return;
+    }
+    await sendPacketToServer(
+      selectedId || undefined,
+      { ascii: reversal, hex: asciiToHex(reversal) },
+      "reversal"
+    );
+  };
+
   const stressJobId = stressJob?.job_id;
   const stressStatus = stressJob?.status;
 
@@ -1063,6 +1603,8 @@ export default function NetworkMessagePage() {
       concurrency,
       delay_ms: delayMs,
       increment_stan: incrementStan,
+      increment_atc: isoOnly ? false : incrementAtc,
+      iso_only: isoOnly,
     });
 
     const snapshot = response.success ? response.data?.data : undefined;
@@ -1133,6 +1675,79 @@ export default function NetworkMessagePage() {
     () => parseIso8583Preview(ascii, hex),
     [ascii, hex]
   );
+
+  const de55Tags = useMemo(() => {
+    if (isoOnly) return [];
+    const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+    const parsed = parseISO8583Ascii(source);
+    const body = parsed?.dataElements[55];
+    if (!body) return [];
+    return parseEmvTlvs(body);
+  }, [ascii, hex, isoOnly]);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem("network-message-imk-ac");
+    if (saved) setImkAc(saved);
+  }, []);
+
+  const onSimulateArqc = async () => {
+    const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+    const key = imkAc.replace(/\s+/g, "");
+    if (!/^[0-9a-fA-F]{32}$/.test(key)) {
+      toast({
+        title: "IMK-AC tidak valid",
+        description: "Isi 32 karakter hex (16 byte) dari environment uji.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setArqcBusy(true);
+    try {
+      sessionStorage.setItem("network-message-imk-ac", key);
+      const response = await rnaApi.simulateArqc({ ascii: source, imk: key });
+      const result = response.success ? response.data?.data : undefined;
+      if (!result?.arqc) {
+        setArqcSim(null);
+        toast({
+          title: "ARQC tidak terhitung",
+          description: response.error || "Periksa DE55 dan IMK-AC",
+          variant: "destructive",
+        });
+        return;
+      }
+      setArqcSim(result);
+    } finally {
+      setArqcBusy(false);
+    }
+  };
+
+  const onApplyArqc = () => {
+    if (!arqcSim?.ascii) return;
+    setAscii(arqcSim.ascii);
+    setHex(asciiToHex(arqcSim.ascii));
+    setArqcSim({ ...arqcSim, match: true, current_arqc: arqcSim.arqc });
+    toast({
+      title: "9F26 dipasang",
+      description: "ARQC baru ada di payload. Packet tersimpan belum berubah sampai Save.",
+    });
+  };
+
+  const onVerifyArqcFormula = async () => {
+    setArqcBusy(true);
+    try {
+      const response = await rnaApi.verifyArqcFormula();
+      const result = response.success ? response.data?.data : undefined;
+      toast({
+        title: result?.ok ? "Rumus NSICCS cocok" : "Rumus NSICCS tidak cocok",
+        description: result
+          ? `Vektor publik menghasilkan ${result.arqc}.`
+          : response.error || "Pemeriksaan rumus gagal",
+        variant: result?.ok ? undefined : "destructive",
+      });
+    } finally {
+      setArqcBusy(false);
+    }
+  };
 
   const applyIsoFieldEdit = (field: string, rawValue: string) => {
     const source = ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
@@ -1643,6 +2258,146 @@ export default function NetworkMessagePage() {
                           </div>
                         )}
 
+                        {/* Alur ATM: skenario, kartu, penutupan */}
+                        <div className="mt-6 border border-gray-200 rounded-xl p-4 space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="text-md font-semibold text-gray-800">Alur ATM</h3>
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                id="scenario-on"
+                                checked={scenarioOn}
+                                onCheckedChange={setScenarioOn}
+                              />
+                              <Label htmlFor="scenario-on" className="text-sm text-gray-700 cursor-pointer">
+                                Pakai skenario saat kirim
+                              </Label>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <p className="text-sm font-medium text-gray-800">1. Skenario</p>
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              <div>
+                                <Label className="text-xs text-gray-600">Jenis transaksi</Label>
+                                <Select value={scenarioProc} onValueChange={setScenarioProc}>
+                                  <SelectTrigger className="h-8 text-sm">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {ATM_SCENARIOS.map((item) => (
+                                      <SelectItem key={item.proc} value={item.proc}>
+                                        {item.label} ({item.proc})
+                                      </SelectItem>
+                                    ))}
+                                    {!ATM_SCENARIOS.some((item) => item.proc === scenarioProc) && (
+                                      <SelectItem value={scenarioProc}>{scenarioProc}</SelectItem>
+                                    )}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div>
+                                <Label htmlFor="scenario-amount" className="text-xs text-gray-600">
+                                  Nominal (rupiah)
+                                </Label>
+                                <Input
+                                  id="scenario-amount"
+                                  inputMode="numeric"
+                                  value={scenarioAmount}
+                                  onChange={(e) => setScenarioAmount(e.target.value.replace(/\D/g, ""))}
+                                  className="h-8 font-mono text-xs"
+                                />
+                              </div>
+                              <div>
+                                <Label htmlFor="scenario-pin" className="text-xs text-gray-600">
+                                  PIN block DE52
+                                </Label>
+                                <Input
+                                  id="scenario-pin"
+                                  type="password"
+                                  autoComplete="off"
+                                  value={scenarioPin}
+                                  onChange={(e) => setScenarioPin(e.target.value)}
+                                  placeholder="kosong = pakai packet"
+                                  className="h-8 font-mono text-xs"
+                                />
+                              </div>
+                            </div>
+                            <p className="text-xs text-gray-500">
+                              Saat kirim, DE3 menjadi {scenarioProc}
+                              {scenarioAmount.trim()
+                                ? `, DE4 dan 9F02 mengikuti nominal ${scenarioAmount}`
+                                : ", nominal packet tidak diubah"}
+                              {emvTypeForProc(scenarioProc)
+                                ? `, 9C = ${emvTypeForProc(scenarioProc)}`
+                                : ""}
+                              . Packet tersimpan tidak berubah.
+                            </p>
+                          </div>
+
+                          <div className="space-y-2">
+                            <p className="text-sm font-medium text-gray-800">2. Kartu</p>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={isoOnly ? "outline" : "default"}
+                                className="rounded-xl"
+                                onClick={() => setIsoOnly(false)}
+                              >
+                                Chip DE22 051
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={isoOnly ? "default" : "outline"}
+                                className="rounded-xl"
+                                onClick={() => {
+                                  setIsoOnly(true);
+                                  setGpoAtc(false);
+                                  setIncrementAtc(false);
+                                }}
+                              >
+                                Magstripe DE22 801
+                              </Button>
+                            </div>
+                            {isoOnly ? (
+                              <p className="text-xs text-amber-700">
+                                Magstripe: tidak ada GPO dan Generate AC. DE55 tidak dikirim.
+                              </p>
+                            ) : (
+                              <div className="space-y-2">
+                                <p className="text-xs text-gray-600">
+                                  Pilih aplikasi{" "}
+                                  {de55Tags.find((tag) => tag.tag === "84" || tag.tag === "9F06")?.value ||
+                                    "dari DE55"}
+                                  . GPO menaikkan ATC{" "}
+                                  {de55Tags.find((tag) => tag.tag === "9F36")?.value || "-"}. Generate AC
+                                  mengisi ARQC{" "}
+                                  {de55Tags.find((tag) => tag.tag === "9F26")?.value || "-"}.
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <Switch
+                                    id="gpo-atc"
+                                    checked={gpoAtc}
+                                    onCheckedChange={setGpoAtc}
+                                  />
+                                  <Label htmlFor="gpo-atc" className="text-sm text-gray-700 cursor-pointer">
+                                    GPO saat kirim: ATC +1 lalu hitung ARQC
+                                  </Label>
+                                </div>
+                                <p className="text-xs text-gray-500">
+                                  Butuh IMK-AC uji di Simulator ARQC. Tanpa kunci baru, ATC tidak dinaikkan.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-gray-500">
+                            5. Penutupan ada di tab Logs setelah jawaban 0210: ARPC, keputusan TC/AAC, dan
+                            reversal bila uang gagal keluar.
+                          </p>
+                        </div>
+
                         {/* Parsed ISO8583 Preview */}
                         <div className="pt-4">
                           <div className="flex flex-wrap items-start justify-between gap-3 mb-1">
@@ -1650,6 +2405,35 @@ export default function NetworkMessagePage() {
                               Parsed ISO8583 Preview
                             </h3>
                             <div className="flex items-center gap-3">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-xl bg-transparent"
+                                onClick={() => {
+                                  const source =
+                                    ascii.trim() || (hex.trim() ? hexToAscii(hex) : "");
+                                  const next = bumpEmvAtcInMessage(source, 1);
+                                  if (!next) {
+                                    toast({
+                                      title: "ATC tidak ditemukan",
+                                      description:
+                                        "Payload tidak punya DE55/tag 9F36 yang bisa dinaikkan.",
+                                      variant: "destructive",
+                                    });
+                                    return;
+                                  }
+                                  setAscii(next);
+                                  setHex(asciiToHex(next));
+                                  toast({
+                                    title: "ATC dinaikkan",
+                                    description:
+                                      "ARQC lama tetap dipakai. Host yang validasi cryptogram akan menolak (Invalid ARQC).",
+                                  });
+                                }}
+                              >
+                                Naikkan ATC +1
+                              </Button>
                               {autoGenerateTrace && (
                                 <Button
                                   type="button"
@@ -1664,6 +2448,22 @@ export default function NetworkMessagePage() {
                               )}
                               <div className="flex items-center gap-2">
                                 <Switch
+                                  id="iso-only"
+                                  checked={isoOnly}
+                                  onCheckedChange={(enabled) => {
+                                    setIsoOnly(enabled);
+                                    if (enabled) setIncrementAtc(false);
+                                  }}
+                                />
+                                <Label
+                                  htmlFor="iso-only"
+                                  className="text-sm text-gray-700 cursor-pointer"
+                                >
+                                  ISO Only (strip DE55)
+                                </Label>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Switch
                                   id="auto-trace"
                                   checked={autoGenerateTrace}
                                   onCheckedChange={onToggleAutoTrace}
@@ -1672,7 +2472,7 @@ export default function NetworkMessagePage() {
                                   htmlFor="auto-trace"
                                   className="text-sm text-gray-700 cursor-pointer"
                                 >
-                                  Auto generate DE011 & DE037
+                                  Auto generate STAN & RRN
                                 </Label>
                               </div>
                             </div>
@@ -1680,11 +2480,16 @@ export default function NetworkMessagePage() {
                           <p className="text-xs text-gray-500 mb-3">
                             Edit MTI atau DE, lalu keluar dari kolom. ASCII dan HEX ikut berubah sebelum dikirim.
                           </p>
+                          {isoOnly && (
+                            <p className="text-xs text-amber-700 mb-3">
+                              ISO Only aktif: saat Send/Stress, DE55 dihapus dan DE22 = 801 (magstripe).
+                              Packet tersimpan tidak berubah.
+                            </p>
+                          )}
                           {autoGenerateTrace && (
                             <p className="text-xs text-blue-700 mb-3">
-                              Saat Send, DE011 diisi STAN 6 digit dan DE037 diisi RRN
-                              (digit tahun + hari Julian + jam + STAN). Packet tersimpan tidak berubah.
-                              Stress test tetap menaikkan STAN dan RRN bila opsi itu aktif.
+                              Saat Send: DE011 (STAN) dan DE037 (RRN) diganti. ATC/ARQC di DE55
+                              dibiarkan berpasangan agar tidak Invalid ARQC. Packet tersimpan tidak berubah.
                               {pendingTrace
                                 ? ` Berikutnya: STAN ${pendingTrace.stan}, RRN ${pendingTrace.rrn}.`
                                 : ""}
@@ -1794,10 +2599,183 @@ export default function NetworkMessagePage() {
                               </tbody>
                             </table>
                           </div>
+
+                          <div className="mt-4 border border-gray-200 rounded-xl overflow-hidden">
+                            <div className="px-4 py-2 bg-gray-50 border-b border-gray-200">
+                              <h4 className="text-sm font-semibold text-gray-800">
+                                Detail DE55 sebelum kirim
+                              </h4>
+                              <p className="text-xs text-gray-500">
+                                Nilai tag EMV yang akan ikut terkirim. Packet tersimpan tidak berubah.
+                              </p>
+                            </div>
+                            {isoOnly ? (
+                              <p className="px-4 py-3 text-sm text-amber-700">
+                                ISO Only aktif. DE55 tidak dikirim, jadi tidak ada validasi ARQC/ATC.
+                              </p>
+                            ) : de55Tags.length === 0 ? (
+                              <p className="px-4 py-3 text-sm text-gray-500">
+                                Payload ini tidak berisi DE55.
+                              </p>
+                            ) : (
+                              <div className="overflow-auto max-h-72">
+                                <table className="w-full">
+                                  <thead className="bg-white sticky top-0">
+                                    <tr>
+                                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Tag</th>
+                                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Nama</th>
+                                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Nilai</th>
+                                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">Arti</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-100">
+                                    {de55Tags.map((tag) => (
+                                      <tr
+                                        key={tag.tag}
+                                        className={
+                                          tag.tag === "9F26" || tag.tag === "9F36"
+                                            ? "bg-amber-50/70"
+                                            : ""
+                                        }
+                                      >
+                                        <td className="px-4 py-2 text-xs font-mono text-gray-800">{tag.tag}</td>
+                                        <td className="px-4 py-2 text-xs text-gray-700">{tag.name}</td>
+                                        <td className="px-4 py-2 text-xs font-mono text-gray-900 break-all">{tag.value}</td>
+                                        <td className="px-4 py-2 text-xs text-gray-600">{tag.decoded || "-"}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="mt-4 border border-gray-200 rounded-xl p-4 space-y-3">
+                            <div>
+                              <h4 className="text-sm font-semibold text-gray-800">Simulator ARQC</h4>
+                              <p className="text-xs text-gray-500">
+                                NSICCS: UDK dari IMK-AC dan PAN, kunci sesi dari ATC, lalu MAC
+                                CDOL1 + AIP + ATC + IAD. Hasil dipasang ke 9F26 sebelum kirim.
+                                Kunci tidak ditulis ke packet.
+                              </p>
+                            </div>
+                            {isoOnly ? (
+                              <p className="text-sm text-amber-700">
+                                ISO Only aktif. DE55 tidak dikirim, jadi ARQC tidak dihitung.
+                              </p>
+                            ) : (
+                              <>
+                                <div className="flex flex-wrap items-end gap-2">
+                                  <div className="flex-1 min-w-[240px]">
+                                    <Label htmlFor="imk-ac" className="text-xs text-gray-600">
+                                      IMK-AC uji (32 hex)
+                                    </Label>
+                                    <Input
+                                      id="imk-ac"
+                                      type="password"
+                                      autoComplete="off"
+                                      value={imkAc}
+                                      onChange={(e) => setImkAc(e.target.value)}
+                                      placeholder="16 byte hex"
+                                      className="h-8 font-mono text-xs"
+                                    />
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className="rounded-xl"
+                                    disabled={arqcBusy || de55Tags.length === 0}
+                                    onClick={onSimulateArqc}
+                                  >
+                                    {arqcBusy ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      "Hitung ARQC"
+                                    )}
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="rounded-xl bg-transparent"
+                                    disabled={arqcBusy}
+                                    onClick={onVerifyArqcFormula}
+                                  >
+                                    Uji rumus
+                                  </Button>
+                                </div>
+                                {arqcSim && (
+                                  <div className="space-y-2 text-xs">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-gray-500">ARQC</span>
+                                      <span className="font-mono text-gray-900">{arqcSim.arqc}</span>
+                                      <Badge
+                                        variant="outline"
+                                        className={
+                                          arqcSim.match
+                                            ? "border-green-200 text-green-700"
+                                            : "border-amber-200 text-amber-700"
+                                        }
+                                      >
+                                        {arqcSim.match ? "sama dengan 9F26" : "berbeda dari 9F26"}
+                                      </Badge>
+                                      <span className="text-gray-500">ATC {arqcSim.atc}</span>
+                                    </div>
+                                    {!arqcSim.match && (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="rounded-xl bg-transparent"
+                                        onClick={onApplyArqc}
+                                      >
+                                        Pasang ke DE55
+                                      </Button>
+                                    )}
+                                    <p className="font-mono text-gray-600 break-all">
+                                      Data MAC {arqcSim.mac_input}
+                                    </p>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ) : (
                       <div className="mt-6 space-y-6">
+                        <div className="border border-gray-200 rounded-xl p-4 space-y-2">
+                          <h3 className="text-md font-semibold text-gray-800">5. Tutup transaksi</h3>
+                          {!closeout ? (
+                            <p className="text-sm text-gray-500">
+                              Belum ada jawaban switch. Setelah 0210 masuk, keputusan kartu dan uang tampil di sini.
+                            </p>
+                          ) : (
+                            <>
+                              <p className="text-sm text-gray-800">
+                                {closeout.mti} · DE39 {closeout.rc || "-"} {closeout.rcLabel}
+                              </p>
+                              <p className="text-sm text-gray-700">{closeout.decision}</p>
+                              {closeout.arpc && (
+                                <p className="text-xs font-mono text-gray-600 break-all">
+                                  ARPC (91) {closeout.arpc}
+                                </p>
+                              )}
+                              {closeout.canDispense && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="rounded-xl"
+                                  disabled={saving}
+                                  onClick={onDispenseFailed}
+                                >
+                                  Uang gagal keluar, kirim reversal 0400
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
                         {/* Traffic Logs */}
                         <div>
                           <div className="flex items-center justify-between mb-4">
@@ -2020,6 +2998,40 @@ export default function NetworkMessagePage() {
           </DialogHeader>
 
           <div className="space-y-4">
+            <div>
+              <Label className="text-sm font-medium text-gray-700 mb-2 block">
+                Payload mode
+              </Label>
+              <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-100 p-1">
+                <Button
+                  type="button"
+                  variant={!isoOnly ? "default" : "ghost"}
+                  disabled={stressRunning}
+                  onClick={() => setIsoOnly(false)}
+                  className={`rounded-xl ${!isoOnly ? "bg-blue-600 hover:bg-blue-700" : ""}`}
+                >
+                  Full EMV
+                </Button>
+                <Button
+                  type="button"
+                  variant={isoOnly ? "default" : "ghost"}
+                  disabled={stressRunning}
+                  onClick={() => {
+                    setIsoOnly(true);
+                    setIncrementAtc(false);
+                  }}
+                  className={`rounded-xl ${isoOnly ? "bg-blue-600 hover:bg-blue-700" : ""}`}
+                >
+                  ISO Only
+                </Button>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                {isoOnly
+                  ? "DE55 dihapus dan DE22 diganti ke 801 (magstripe) sebelum dikirim."
+                  : "DE55 ikut dikirim apa adanya, termasuk ATC dan ARQC."}
+              </p>
+            </div>
+
             <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-100 p-1">
               <Button
                 type="button"
@@ -2097,16 +3109,33 @@ export default function NetworkMessagePage() {
               </div>
             </div>
 
-            <div className="flex items-start gap-2">
-              <Checkbox
-                id="increment-stan"
-                checked={incrementStan}
-                disabled={stressRunning}
-                onCheckedChange={(value) => setIncrementStan(value === true)}
-              />
-              <Label htmlFor="increment-stan" className="text-sm text-gray-700 leading-5">
-                Naikkan STAN (DE11) dan RRN (DE37) pada tiap request ISO8583
-              </Label>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="increment-stan"
+                  checked={incrementStan}
+                  disabled={stressRunning}
+                  onCheckedChange={(value) => setIncrementStan(value === true)}
+                />
+                <Label htmlFor="increment-stan" className="text-sm text-gray-700 leading-5">
+                  Naikkan STAN (DE11) dan RRN (DE37) pada tiap request
+                </Label>
+              </div>
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="increment-atc"
+                  checked={incrementAtc}
+                  disabled={stressRunning || isoOnly}
+                  onCheckedChange={(value) => setIncrementAtc(value === true)}
+                />
+                <Label
+                  htmlFor="increment-atc"
+                  className={`text-sm leading-5 ${isoOnly ? "text-gray-400" : "text-gray-700"}`}
+                >
+                  Naikkan ATC (DE55/9F36) juga — biasanya Invalid ARQC
+                  {isoOnly ? " (tidak relevan di ISO Only)" : ""}
+                </Label>
+              </div>
             </div>
 
             {stressJob && (
@@ -2209,6 +3238,7 @@ export default function NetworkMessagePage() {
                             <th className="px-3 py-2 text-left font-medium">Waktu</th>
                             <th className="px-3 py-2 text-left font-medium">STAN</th>
                             <th className="px-3 py-2 text-left font-medium">RRN</th>
+                            <th className="px-3 py-2 text-left font-medium">ATC</th>
                             <th className="px-3 py-2 text-left font-medium">Jenis Transaksi</th>
                             <th className="px-3 py-2 text-left font-medium">Hasil</th>
                           </tr>
@@ -2219,6 +3249,7 @@ export default function NetworkMessagePage() {
                               <td className="px-3 py-1.5 font-mono whitespace-nowrap">{row.time}</td>
                               <td className="px-3 py-1.5 font-mono">{row.stan || "-"}</td>
                               <td className="px-3 py-1.5 font-mono">{row.rrn || "-"}</td>
+                              <td className="px-3 py-1.5 font-mono">{row.atc || "-"}</td>
                               <td className="px-3 py-1.5">{row.transaction_type || "-"}</td>
                               <td className={`px-3 py-1.5 ${row.success ? "text-green-700" : "text-red-700"}`}>
                                 {row.success ? "Sukses" : "Gagal"}
