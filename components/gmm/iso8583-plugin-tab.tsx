@@ -1,19 +1,45 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Search, Loader2, AlertCircle, Database, RefreshCw, Link2 } from "lucide-react"
+import {
+  Search,
+  Loader2,
+  AlertCircle,
+  Database,
+  RefreshCw,
+  Link2,
+  Plus,
+  Pencil,
+  Trash2,
+  Eye,
+  Copy,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { useToast } from "@/hooks/use-toast"
 import { rnaApi } from "@/lib/api"
 import type { ConnectionProfile, ContainerPlugin, ContainerPluginAttr } from "@/lib/types"
 import { ManageDbProfilesDialog } from "@/components/renjs/manage-db-profiles-dialog"
 import { ContainerPluginDetailDialog } from "@/components/container-plugin/container-plugin-detail-dialog"
 import { GmmRecordDetailDialog } from "@/components/gmm/gmm-record-detail-dialog"
+import {
+  Iso8583PluginEditorDialog,
+  type Iso8583ColumnMeta,
+} from "@/components/gmm/iso8583-plugin-editor-dialog"
 
 const PROFILE_STORAGE_KEY = "gmm:iso8583_profile_id"
 
@@ -49,6 +75,12 @@ function parseNumericId(text: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+function rowId(row: Record<string, unknown>): string | number | null {
+  const id = row.id ?? row.ID ?? row.Id
+  if (id == null || id === "") return null
+  return typeof id === "number" || typeof id === "string" ? id : String(id)
+}
+
 export function Iso8583PluginTab() {
   const { toast } = useToast()
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([])
@@ -57,6 +89,7 @@ export function Iso8583PluginTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [columns, setColumns] = useState<string[]>([])
+  const [columnsMeta, setColumnsMeta] = useState<Iso8583ColumnMeta[]>([])
   const [plugins, setPlugins] = useState<Array<Record<string, unknown>>>([])
   const [filter, setFilter] = useState("")
   const [manageProfilesOpen, setManageProfilesOpen] = useState(false)
@@ -77,6 +110,19 @@ export function Iso8583PluginTab() {
   const [defLoading, setDefLoading] = useState(false)
   const [defError, setDefError] = useState<string | null>(null)
   const [defRecord, setDefRecord] = useState<Record<string, unknown> | null>(null)
+
+  const [viewOpen, setViewOpen] = useState(false)
+  const [viewLoading, setViewLoading] = useState(false)
+  const [viewError, setViewError] = useState<string | null>(null)
+  const [viewRecord, setViewRecord] = useState<Record<string, unknown> | null>(null)
+
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editorMode, setEditorMode] = useState<"create" | "edit" | "duplicate">("create")
+  const [editorInitial, setEditorInitial] = useState<Record<string, unknown> | null>(null)
+  const [editorSaving, setEditorSaving] = useState(false)
+
+  const [deleteTarget, setDeleteTarget] = useState<Record<string, unknown> | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const loadProfiles = useCallback(async () => {
     setProfilesLoading(true)
@@ -141,6 +187,7 @@ export function Iso8583PluginTab() {
       const res = await rnaApi.gmmListIso8583(profileId)
       if (res.success && res.data?.data) {
         setColumns(res.data.data.columns || [])
+        setColumnsMeta((res.data.data.columns_meta as Iso8583ColumnMeta[]) || [])
         setPlugins(res.data.data.plugins || [])
         setLoaded(true)
         toast({
@@ -151,6 +198,7 @@ export function Iso8583PluginTab() {
         const msg = res.error || res.data?.error || "Gagal memuat data"
         setError(msg)
         setColumns([])
+        setColumnsMeta([])
         setPlugins([])
         setLoaded(false)
       }
@@ -158,6 +206,7 @@ export function Iso8583PluginTab() {
       const msg = e instanceof Error ? e.message : String(e)
       setError(msg)
       setColumns([])
+      setColumnsMeta([])
       setPlugins([])
       setLoaded(false)
     } finally {
@@ -165,8 +214,19 @@ export function Iso8583PluginTab() {
     }
   }
 
+  const refreshQuiet = useCallback(async () => {
+    if (!profileId) return
+    const res = await rnaApi.gmmListIso8583(profileId)
+    if (res.success && res.data?.data) {
+      setColumns(res.data.data.columns || [])
+      setColumnsMeta((res.data.data.columns_meta as Iso8583ColumnMeta[]) || [])
+      setPlugins(res.data.data.plugins || [])
+      setLoaded(true)
+    }
+  }, [profileId])
+
   const rowKey = (row: Record<string, unknown>, index: number) => {
-    const id = row.id ?? row.ID ?? row.Id
+    const id = rowId(row)
     return id != null ? String(id) : `row-${index}`
   }
 
@@ -304,9 +364,177 @@ export function Iso8583PluginTab() {
     [defRecord, profileId, toast],
   )
 
+  const openViewPlugin = useCallback(
+    async (row: Record<string, unknown>) => {
+      const id = rowId(row)
+      if (id == null) {
+        toast({
+          title: "ID tidak ditemukan",
+          description: "Baris ini tidak punya kolom id.",
+          variant: "destructive",
+        })
+        return
+      }
+      if (!requireProfile()) return
+      setViewOpen(true)
+      setViewLoading(true)
+      setViewError(null)
+      setViewRecord(null)
+      try {
+        const res = await rnaApi.gmmGetIso8583(profileId, id)
+        if (res.success && res.data?.data?.plugin) {
+          setViewRecord(res.data.data.plugin)
+        } else {
+          setViewError(res.error || res.data?.error || `Plugin #${id} tidak ditemukan`)
+        }
+      } catch (e) {
+        setViewError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setViewLoading(false)
+      }
+    },
+    [profileId, requireProfile, toast],
+  )
+
+  const openCreate = () => {
+    if (!requireProfile()) return
+    if (!loaded) {
+      toast({
+        title: "Muat data dulu",
+        description: "Klik Muat Data agar kolom tabel tersedia untuk form create.",
+        variant: "destructive",
+      })
+      return
+    }
+    setEditorMode("create")
+    setEditorInitial(null)
+    setEditorOpen(true)
+  }
+
+  const openEdit = (row: Record<string, unknown>) => {
+    if (!requireProfile()) return
+    setEditorMode("edit")
+    setEditorInitial(row)
+    setEditorOpen(true)
+  }
+
+  const openDuplicate = (row: Record<string, unknown>) => {
+    if (!requireProfile()) return
+    if (!loaded) {
+      toast({
+        title: "Muat data dulu",
+        description: "Klik Muat Data agar kolom tabel tersedia.",
+        variant: "destructive",
+      })
+      return
+    }
+    const copy: Record<string, unknown> = { ...row }
+    // PK harus diganti — kosongkan id (dan alias umum)
+    for (const key of Object.keys(copy)) {
+      if (key.toLowerCase() === "id") copy[key] = ""
+    }
+    setEditorMode("duplicate")
+    setEditorInitial(copy)
+    setEditorOpen(true)
+  }
+
+  const handleEditorSubmit = async (fields: Record<string, unknown>) => {
+    if (!profileId) throw new Error("Connection profile wajib")
+    setEditorSaving(true)
+    try {
+      if (editorMode === "create" || editorMode === "duplicate") {
+        const res = await rnaApi.gmmCreateIso8583({ profileId, fields })
+        if (!(res.success && res.data?.data?.plugin)) {
+          throw new Error(
+            res.error ||
+              res.data?.error ||
+              (editorMode === "duplicate" ? "Gagal menduplikasi plugin" : "Gagal menambah plugin"),
+          )
+        }
+        toast({
+          title: editorMode === "duplicate" ? "Plugin diduplikasi" : "Plugin ditambah",
+          description: `ISO8583 plugin #${String(res.data.data.plugin.id ?? fields.id)} berhasil dibuat.`,
+        })
+      } else {
+        const id = rowId(editorInitial || {})
+        if (id == null) throw new Error("ID plugin tidak valid")
+        const res = await rnaApi.gmmUpdateIso8583({ profileId, id, fields })
+        if (!(res.success && res.data?.data?.plugin)) {
+          throw new Error(res.error || res.data?.error || "Gagal mengupdate plugin")
+        }
+        toast({
+          title: "Plugin diupdate",
+          description: `ISO8583 plugin #${id} berhasil disimpan.`,
+        })
+        if (viewRecord && String(rowId(viewRecord)) === String(id)) {
+          setViewRecord(res.data.data.plugin)
+        }
+      }
+      await refreshQuiet()
+    } finally {
+      setEditorSaving(false)
+    }
+  }
+
+  const saveViewPlugin = useCallback(
+    async (fields: Record<string, unknown>) => {
+      const id = rowId(viewRecord || {})
+      if (id == null) throw new Error("ID plugin tidak valid")
+      if (!profileId) throw new Error("Connection profile wajib")
+      const res = await rnaApi.gmmUpdateIso8583({ profileId, id, fields })
+      if (res.success && res.data?.data?.plugin) {
+        setViewRecord(res.data.data.plugin)
+        await refreshQuiet()
+        toast({
+          title: "Plugin disimpan",
+          description: `#${id} berhasil di-update`,
+        })
+        return res.data.data.plugin
+      }
+      throw new Error(res.error || res.data?.error || "Gagal menyimpan plugin")
+    },
+    [viewRecord, profileId, refreshQuiet, toast],
+  )
+
+  const handleDelete = async () => {
+    if (!deleteTarget || !profileId) return
+    const id = rowId(deleteTarget)
+    if (id == null) return
+    setDeleting(true)
+    try {
+      const res = await rnaApi.gmmDeleteIso8583(profileId, id)
+      if (res.success && res.data?.success !== false) {
+        toast({
+          title: "Plugin dihapus",
+          description: `ISO8583 plugin #${id} dihapus.`,
+        })
+        setDeleteTarget(null)
+        if (viewRecord && String(rowId(viewRecord)) === String(id)) {
+          setViewOpen(false)
+          setViewRecord(null)
+        }
+        await refreshQuiet()
+      } else {
+        toast({
+          title: "Gagal menghapus",
+          description: res.error || res.data?.error || "Tidak dapat menghapus plugin",
+          variant: "destructive",
+        })
+      }
+    } catch (e) {
+      toast({
+        title: "Gagal menghapus",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-4 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-4 items-end">
         <div className="space-y-2 min-w-0">
           <Label className="flex items-center gap-2">
             <Link2 className="h-3.5 w-3.5 text-gray-500" />
@@ -337,6 +565,15 @@ export function Iso8583PluginTab() {
         <Button onClick={handleLoad} disabled={loading || profilesLoading || !profileId}>
           {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
           Muat Data
+        </Button>
+        <Button
+          type="button"
+          onClick={openCreate}
+          disabled={profilesLoading || !profileId || !loaded}
+          title={!loaded ? "Muat data dulu agar kolom tersedia" : "Tambah baris baru"}
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Tambah
         </Button>
       </div>
 
@@ -386,15 +623,26 @@ export function Iso8583PluginTab() {
               Pilih connection profile lalu klik Muat Data.
             </div>
           ) : filteredPlugins.length === 0 ? (
-            <div className="p-10 text-center text-gray-500 text-sm">
-              {filter
-                ? "Tidak ada baris yang cocok dengan filter."
-                : "Tabel kosong atau tidak ada data."}
+            <div className="p-10 text-center text-gray-500 text-sm space-y-3">
+              <p>
+                {filter
+                  ? "Tidak ada baris yang cocok dengan filter."
+                  : "Tabel kosong atau tidak ada data."}
+              </p>
+              {!filter && (
+                <Button size="sm" variant="outline" onClick={openCreate}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Tambah plugin
+                </Button>
+              )}
             </div>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="bg-gray-50 sticky top-0 z-10">
                 <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider border-b whitespace-nowrap w-36">
+                    Aksi
+                  </th>
                   {columns.map((col) => (
                     <th
                       key={col}
@@ -408,6 +656,50 @@ export function Iso8583PluginTab() {
               <tbody className="divide-y divide-gray-100">
                 {filteredPlugins.map((row, index) => (
                   <tr key={rowKey(row, index)} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          title="Lihat"
+                          onClick={() => openViewPlugin(row)}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          title="Edit"
+                          onClick={() => openEdit(row)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          title="Duplicate"
+                          onClick={() => openDuplicate(row)}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          title="Hapus"
+                          onClick={() => setDeleteTarget(row)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </td>
                     {columns.map((col) => {
                       const text = cellText(row[col])
                       const isLong = text.length > 80
@@ -525,6 +817,63 @@ export function Iso8583PluginTab() {
         canEdit
         onSave={saveDataDefinition}
       />
+
+      <GmmRecordDetailDialog
+        open={viewOpen}
+        onOpenChange={setViewOpen}
+        title="ISO8583 Plugin"
+        tableName="gmm_iso8583_plugin"
+        loading={viewLoading}
+        error={viewError}
+        record={viewRecord}
+        canEdit
+        onSave={saveViewPlugin}
+      />
+
+      <Iso8583PluginEditorDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        mode={editorMode}
+        columnsMeta={columnsMeta}
+        initial={editorInitial}
+        saving={editorSaving}
+        onSubmit={handleEditorSubmit}
+      />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-red-50">
+              <Trash2 className="h-6 w-6 text-red-600" />
+            </div>
+            <AlertDialogTitle className="text-center">Hapus plugin?</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-2">
+              <span className="block">Baris akan dihapus permanen dari gmm_iso8583_plugin.</span>
+              {deleteTarget && (
+                <span className="block font-mono text-sm text-gray-800 break-all">
+                  id={String(rowId(deleteTarget) ?? "—")} ·{" "}
+                  {cellText(deleteTarget.container_plugin_name)} /{" "}
+                  {cellText(deleteTarget.msg_direction)} / {cellText(deleteTarget.iso_mti)}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-center gap-2">
+            <AlertDialogCancel disabled={deleting}>Batal</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                void handleDelete()
+              }}
+              disabled={deleting}
+              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2" />}
+              Hapus
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ManageDbProfilesDialog
         open={manageProfilesOpen}

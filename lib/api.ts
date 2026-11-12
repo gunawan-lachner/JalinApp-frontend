@@ -1540,6 +1540,17 @@ export const rnaApi = {
           hash?: string | null
           last_mod?: string
         }>
+        columns?: string[]
+        columns_meta?: Array<{
+          name: string
+          type: string
+          nullable: boolean
+          is_pk: boolean
+          is_auto: boolean
+          is_blob: boolean
+          is_numeric: boolean
+          is_server_only?: boolean
+        }>
       }
       error: string | null
     }>
@@ -1562,6 +1573,7 @@ export const rnaApi = {
           name: string
           usercomment: string
           content: string
+          mappingdata?: string
           hash?: string | null
           last_mod?: string
         }
@@ -1592,6 +1604,7 @@ export const rnaApi = {
           name: string
           usercomment: string
           content?: string
+          mappingdata?: string
           hash?: string | null
           last_mod?: string
         }
@@ -1602,6 +1615,53 @@ export const rnaApi = {
     return apiCall("/gmm/xslt/save", {
       method: "POST",
       body: JSON.stringify(payload),
+    })
+  },
+
+  gmmUpdateXslt: async (payload: {
+    profileId: string
+    id: number
+    fields: Record<string, unknown>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        mapping: {
+          id: number
+          name: string
+          usercomment: string
+          content?: string
+          mappingdata?: string
+          hash?: string | null
+          last_mod?: string
+        }
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/update", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  gmmDeleteXslt: async (
+    profileId: string,
+    id: number | string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        deleted: boolean
+        id: number | string
+        mapping?: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/xslt/delete", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
     })
   },
 
@@ -1692,6 +1752,15 @@ export const rnaApi = {
       success: boolean
       data: {
         columns: string[]
+        columns_meta?: Array<{
+          name: string
+          type: string
+          nullable: boolean
+          is_pk: boolean
+          is_auto: boolean
+          is_blob: boolean
+          is_numeric: boolean
+        }>
         plugins: Array<Record<string, unknown>>
       }
       error: string | null
@@ -1703,7 +1772,111 @@ export const rnaApi = {
     })
   },
 
+  gmmGetIso8583: async (
+    profileId: string,
+    id: number | string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        plugin: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/iso8583/get", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  gmmCreateIso8583: async (payload: {
+    profileId: string
+    fields: Record<string, unknown>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        plugin: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/iso8583/create", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  gmmUpdateIso8583: async (payload: {
+    profileId: string
+    id: number | string
+    fields: Record<string, unknown>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        plugin: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/iso8583/update", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  gmmDeleteIso8583: async (
+    profileId: string,
+    id: number | string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        deleted: boolean
+        id: number | string
+        plugin?: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/iso8583/delete", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
+    })
+  },
+
   // GMM data definition APIs (gmm_data_definition)
+  gmmListDataDefinition: async (
+    profileId: string,
+    search?: string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        columns: string[]
+        columns_meta?: Array<{
+          name: string
+          type: string
+          nullable: boolean
+          is_pk: boolean
+          is_auto: boolean
+          is_blob: boolean
+          is_numeric: boolean
+          is_server_only?: boolean
+        }>
+        definitions: Array<Record<string, unknown>>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/data-definition/list", {
+      method: "POST",
+      body: JSON.stringify({ profileId, search: search || "" }),
+    })
+  },
+
   gmmGetDataDefinition: async (
     profileId: string,
     id: number,
@@ -1719,6 +1892,24 @@ export const rnaApi = {
     return apiCall("/gmm/data-definition/get", {
       method: "POST",
       body: JSON.stringify({ profileId, id }),
+    })
+  },
+
+  gmmCreateDataDefinition: async (payload: {
+    profileId: string
+    fields: Record<string, unknown>
+  }): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        definition: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/data-definition/create", {
+      method: "POST",
+      body: JSON.stringify(payload),
     })
   },
 
@@ -1738,6 +1929,26 @@ export const rnaApi = {
     return apiCall("/gmm/data-definition/update", {
       method: "POST",
       body: JSON.stringify(payload),
+    })
+  },
+
+  gmmDeleteDataDefinition: async (
+    profileId: string,
+    id: number | string,
+  ): Promise<
+    ApiResponse<{
+      success: boolean
+      data: {
+        deleted: boolean
+        id: number | string
+        definition?: Record<string, unknown>
+      }
+      error: string | null
+    }>
+  > => {
+    return apiCall("/gmm/data-definition/delete", {
+      method: "POST",
+      body: JSON.stringify({ profileId, id }),
     })
   },
 

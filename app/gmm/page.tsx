@@ -7,6 +7,8 @@ import { Sidebar } from "@/components/layout/sidebar"
 import { useAuth } from "@/contexts/auth-context"
 import { ExplorerTab } from "@/components/renjs/explorer-tab"
 import { Iso8583PluginTab } from "@/components/gmm/iso8583-plugin-tab"
+import { DataDefinitionTab } from "@/components/gmm/data-definition-tab"
+import { XsltMappingTab } from "@/components/gmm/xslt-mapping-tab"
 
 const GMM_TABS = [
   {
@@ -18,6 +20,16 @@ const GMM_TABS = [
     id: "iso8583",
     label: "ISO8583 Plugin",
     description: "Data dari tabel gmm_iso8583_plugin",
+  },
+  {
+    id: "data-definition",
+    label: "Data Definition",
+    description: "Data dari tabel gmm_data_definition",
+  },
+  {
+    id: "xslt-mapping",
+    label: "XSLT Mapping",
+    description: "Data dari tabel gmm_xslt_mapping",
   },
 ]
 
@@ -82,7 +94,7 @@ export default function GmmPage() {
                           GMM
                         </h1>
                         <p className="text-gray-600">
-                          Browse file XSLT dan kelola ISO8583 plugin
+                          Browse file XSLT, kelola ISO8583 plugin, data definition, dan XSLT mapping
                         </p>
                       </div>
                       <Layers className="h-8 w-8 text-blue-600" />
@@ -115,6 +127,8 @@ export default function GmmPage() {
                     <div className="p-6">
                       {activeTab === "explorer" && <ExplorerTab dbTarget="gmm" />}
                       {activeTab === "iso8583" && <Iso8583PluginTab />}
+                      {activeTab === "data-definition" && <DataDefinitionTab />}
+                      {activeTab === "xslt-mapping" && <XsltMappingTab />}
                     </div>
                   </div>
                 </>
