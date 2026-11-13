@@ -84,6 +84,7 @@ const TABLE_COLUMNS: Array<{ key: keyof ContainerPlugin; label: string }> = [
   { key: "cnt_instances", label: "Instances" },
   { key: "in_next_plugin", label: "In Next" },
   { key: "out_next_plugin", label: "Out Next" },
+  { key: "connectto_ipport", label: "Connect To" },
   { key: "comments", label: "Comments" },
 ]
 
@@ -529,7 +530,7 @@ export function ContainerPluginPanel() {
                   handleSearch(1)
                 }
               }}
-              placeholder="Cari name / id / comments..."
+              placeholder="Cari name / id / comments / connect to..."
               className="pl-9 font-mono text-sm"
               disabled={!profileId || profilesLoading}
             />
