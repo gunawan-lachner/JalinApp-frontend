@@ -421,19 +421,28 @@ export function ParticipantDuplicateModal({
         comments: formData.comments,
       }
 
-      // Prepare the container_plugins array
+      // Prepare the container_plugins array.
+      // Always keep _old_id so backend can remap attrs when new IDs are blank (auto-increment).
       const newContainerPlugins =
         duplicateData.container_plugins?.map((cp: any) => {
-          const newCp = { ...cp }
+          const newCp: any = { ...cp, _old_id: cp.id }
           if (originalMainPlugin && cp.name === originalMainPlugin.name) {
             newCp.name = formData.newMainPluginName
-            newCp.id = formData.newMainPluginId ? Number.parseInt(formData.newMainPluginId) : undefined
+            if (formData.newMainPluginId) {
+              newCp.id = Number.parseInt(formData.newMainPluginId)
+            } else {
+              delete newCp.id
+            }
             newCp.in_next_plugin = formData.mainPluginInNext
             newCp.out_next_plugin = formData.mainPluginOutNext
             newCp.comments = formData.newMainPluginComments
           } else if (originalComPlugin && cp.name === originalComPlugin.name) {
             newCp.name = formData.mainPluginOutNext
-            newCp.id = formData.newComPluginId ? Number.parseInt(formData.newComPluginId) : undefined
+            if (formData.newComPluginId) {
+              newCp.id = Number.parseInt(formData.newComPluginId)
+            } else {
+              delete newCp.id
+            }
             newCp.in_next_plugin = formData.newMainPluginName
             newCp.out_next_plugin = ""
             // Only update connectto_ipport if out_next_plugin is empty (i.e., it's the COM plugin)
@@ -444,17 +453,12 @@ export function ParticipantDuplicateModal({
           return newCp
         }) || []
 
-      // Prepare the container_plugin_attrs array
+      // Keep original container_plugin_id on attrs; backend remaps via _old_id → new plugin id.
+      // PARTICIPANT content is updated on backend to the new participant_id after insert.
       const newContainerPluginAttrs =
         duplicateData.container_plugin_attrs?.map((attr: any) => {
           const newAttr = { ...attr }
-          if (originalMainPlugin && attr.container_plugin_id === originalMainPlugin.id) {
-            newAttr.container_plugin_id = formData.newMainPluginId
-              ? Number.parseInt(formData.newMainPluginId)
-              : undefined
-          } else if (originalComPlugin && attr.container_plugin_id === originalComPlugin.id) {
-            newAttr.container_plugin_id = formData.newComPluginId ? Number.parseInt(formData.newComPluginId) : undefined
-          }
+          delete newAttr.id
           return newAttr
         }) || []
 
