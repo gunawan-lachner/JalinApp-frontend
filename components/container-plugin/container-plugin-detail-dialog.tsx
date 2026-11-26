@@ -10,7 +10,16 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Search, Cpu, Database, AlertCircle, Pencil } from "lucide-react"
+import {
+  Loader2,
+  Search,
+  Cpu,
+  Database,
+  AlertCircle,
+  Pencil,
+  Trash2,
+} from "lucide-react"
+import { buildDeleteAttrConfirmMessage } from "@/lib/container-plugin-attr-delete"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import type { ContainerPlugin, ContainerPluginAttr } from "@/lib/types"
@@ -52,6 +61,8 @@ interface ContainerPluginDetailDialogProps {
   onOpenParticipantByName?: (name: string) => void
   canEdit?: boolean
   onEdit?: (plugin: ContainerPlugin) => void
+  onDeleteAttr?: (attr: ContainerPluginAttr) => void
+  deletingAttrId?: number | string | null
 }
 
 export function ContainerPluginDetailDialog({
@@ -68,6 +79,8 @@ export function ContainerPluginDetailDialog({
   onOpenParticipantByName,
   canEdit,
   onEdit,
+  onDeleteAttr,
+  deletingAttrId,
 }: ContainerPluginDetailDialogProps) {
   const [attrSearch, setAttrSearch] = useState("")
   const [showOnlyMatched, setShowOnlyMatched] = useState(true)
@@ -282,6 +295,11 @@ export function ContainerPluginDetailDialog({
                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase tracking-wider border-b">
                               Content
                             </th>
+                            {canEdit && onDeleteAttr ? (
+                              <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase tracking-wider border-b whitespace-nowrap">
+                                Aksi
+                              </th>
+                            ) : null}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
@@ -310,6 +328,32 @@ export function ContainerPluginDetailDialog({
                                     {attr.content}
                                   </span>
                                 </td>
+                                {canEdit && onDeleteAttr ? (
+                                  <td className="px-4 py-3 whitespace-nowrap text-right">
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8 w-8 p-0"
+                                      disabled={
+                                        deletingAttrId != null &&
+                                        String(deletingAttrId) ===
+                                          String(attr.id)
+                                      }
+                                      title="Hapus atribut"
+                                      aria-label="Hapus atribut"
+                                      onClick={() => {
+                                        const ok = window.confirm(
+                                          buildDeleteAttrConfirmMessage(attr),
+                                        )
+                                        if (!ok) return
+                                        onDeleteAttr(attr)
+                                      }}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                    </Button>
+                                  </td>
+                                ) : null}
                               </tr>
                             )
                           })}
