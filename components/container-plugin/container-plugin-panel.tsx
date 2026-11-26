@@ -29,6 +29,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { useToast } from "@/hooks/use-toast"
 import { rnaApi } from "@/lib/api"
+import { removeAttrById } from "@/lib/container-plugin-attr-delete"
 import type {
   ConnectionProfile,
   ContainerPlugin,
@@ -136,6 +137,9 @@ export function ContainerPluginPanel() {
     ContainerPluginAttr[]
   >([])
   const [dialogHasAttrFilters, setDialogHasAttrFilters] = useState(false)
+  const [deletingAttrId, setDeletingAttrId] = useState<number | string | null>(
+    null,
+  )
 
   // Edit dialog state
   const [editOpen, setEditOpen] = useState(false)
@@ -472,6 +476,56 @@ export function ContainerPluginPanel() {
       setEditOpen(false)
     } finally {
       setEditLoading(false)
+    }
+  }
+
+  const handleDeleteAttr = async (attr: ContainerPluginAttr) => {
+    if (!profileId || !canCrud || !dialogPlugin) return
+    const pluginId = dialogPlugin.id
+    if (pluginId == null) return
+
+    setDeletingAttrId(attr.id)
+    try {
+      const res = await rnaApi.updateContainerPlugin(pluginId, {
+        profileId,
+        attrs: [{ id: Number(attr.id), _delete: true }],
+      })
+      const payload = res.data
+      if (res.success && payload?.success !== false) {
+        if (payload?.data?.attrs) {
+          setDialogAttrs(payload.data.attrs)
+          if (!dialogHasAttrFilters) {
+            setDialogFilteredAttrs(payload.data.attrs)
+          } else {
+            setDialogFilteredAttrs((prev) => removeAttrById(prev, attr.id))
+          }
+        } else {
+          setDialogAttrs((prev) => removeAttrById(prev, attr.id))
+          setDialogFilteredAttrs((prev) => removeAttrById(prev, attr.id))
+        }
+        toast({
+          title: "Atribut dihapus",
+          description: `Attr ID ${attr.id} berhasil dihapus.`,
+        })
+      } else {
+        toast({
+          title: "Gagal menghapus atribut",
+          description:
+            payload?.error ||
+            payload?.message ||
+            res.error ||
+            "Delete gagal",
+          variant: "destructive",
+        })
+      }
+    } catch (e) {
+      toast({
+        title: "Gagal menghapus atribut",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      })
+    } finally {
+      setDeletingAttrId(null)
     }
   }
 
@@ -941,6 +995,8 @@ export function ContainerPluginPanel() {
         onOpenParticipantByName={openParticipantByPluginName}
         canEdit={canCrud}
         onEdit={(p) => openEdit(p)}
+        onDeleteAttr={canCrud ? handleDeleteAttr : undefined}
+        deletingAttrId={deletingAttrId}
       />
 
       <PluginTableDetailDialog
